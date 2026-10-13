@@ -340,8 +340,8 @@ function fillDrugDependentFields() {
   el.bolusUnits.textContent = info.massUnits;
   el.bolusAmount.value = drug === "propofol" ? "20" : "50";
   el.targetUnits.textContent = info.concentrationUnits;
-  el.targetRange.textContent = `Typical ${info.typicalRange.lower} to ${info.typicalRange.upper} ${info.concentrationUnits} ` +
-    `(${info.typicalTarget} is typical; above ${info.targetCeiling} the API refuses the target). A target of 0 stops the infusion.`;
+  el.targetRange.textContent = `Typical ${info.typicalRange.lower} to ${info.typicalRange.upper} ${info.concentrationUnits}; ` +
+    `above ${info.targetCeiling} the API refuses the target; 0 stops the infusion.`;
   el.targetValue.value = String(info.typicalTarget);
   el.syringeTold.value = String(preset.initial);
   el.syringeTrue.value = String(preset.initial * 2);
@@ -407,8 +407,14 @@ function setRunningUi(running) {
   const lock = [el.drug, el.concentration, el.weight, el.height, el.age, el.sex, el.maxRate, el.minRate,
     el.rateResolution, el.syringeVolume, el.declaredLatency, el.actualLatency, el.interval, el.transport, el.baseUrl];
   for (const input of lock) input.disabled = running;
+  // The pump screen's buttons: Start until it is pressed (and again once the
+  // case has ended); Stop and the target buttons while the case runs.
+  el.start.hidden = running;
   el.start.disabled = running;
+  el.stop.hidden = !running;
   el.stop.disabled = !running;
+  el.setTarget.hidden = !running;
+  el.targetZero.hidden = !running;
   const teaching = [el.handBolus, el.pauseResume, el.dropNext, el.changeSyringe, el.latencySlider];
   for (const b of teaching) b.disabled = !running;
 }
@@ -1079,7 +1085,9 @@ function axes(ctx, w, h, xMax, yMax, yLabel, colours, yFormat) {
   ctx.fillStyle = colours.axis;
   ctx.textAlign = "right";
   ctx.textBaseline = "middle";
-  const yTicks = 4;
+  // Fewer y ticks on a short chart (the rate chart on a wide screen can be
+  // 60 px tall), so that the labels do not overprint.
+  const yTicks = plotH >= 110 ? 4 : plotH >= 50 ? 2 : 1;
   for (let i = 0; i <= yTicks; i++) {
     const v = (yMax * i) / yTicks;
     const y = Y(v);
@@ -1106,13 +1114,16 @@ function axes(ctx, w, h, xMax, yMax, yLabel, colours, yFormat) {
   ctx.lineTo(PAD.left, PAD.top + plotH);
   ctx.lineTo(w - PAD.right, PAD.top + plotH);
   ctx.stroke();
-  ctx.save();
-  ctx.translate(12, PAD.top + plotH / 2);
-  ctx.rotate(-Math.PI / 2);
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  ctx.fillText(yLabel, 0, 0);
-  ctx.restore();
+  if (plotH >= 40) {
+    // The legend names the units too, so a very short chart does without.
+    ctx.save();
+    ctx.translate(12, PAD.top + plotH / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(yLabel, 0, 0);
+    ctx.restore();
+  }
   ctx.textAlign = "right";
   ctx.textBaseline = "bottom";
   ctx.fillText("minutes", w - PAD.right, h - 2);
@@ -1161,8 +1172,8 @@ function drawCharts(snap) {
   drawCe(snap, series, xMax, colours);
   drawRate(snap, series, xMax, colours);
   if (snap) {
-    el.chartSummary.textContent = `Time axis in minutes of case time. True Ce ${sig(snap.truth.ce, 3)}, predicted ${sig(snap.predicted.ce, 3)} ` +
-      `${snap.config.concentrationUnits}; peak true Ce so far ${sig(snap.maxTrueCe, 4)} at ${clockText((snap.maxTrueCeAt - snap.caseStart) / 1000)}. The charts redraw once a second.`;
+    el.chartSummary.textContent = `Minutes of case time. True Ce ${sig(snap.truth.ce, 3)}, predicted ${sig(snap.predicted.ce, 3)} ` +
+      `${snap.config.concentrationUnits}; peak ${sig(snap.maxTrueCe, 4)} at ${clockText((snap.maxTrueCeAt - snap.caseStart) / 1000)}.`;
   }
 }
 
@@ -1364,12 +1375,25 @@ document.addEventListener("visibilitychange", () => {
   }
 });
 
-// Redraw on resize and on a colour-scheme change.
+// Redraw on resize and on a colour-scheme change.  On a wide screen the
+// charts take whatever height the pump screen leaves them (css: .charts), so
+// a change in that box's size, not only the window's, redraws too.
 let resizeTimer = null;
-window.addEventListener("resize", () => {
+const scheduleRedraw = () => {
   clearTimeout(resizeTimer);
   resizeTimer = setTimeout(() => { app.lastDraw = 0; refresh(true); }, 100);
-});
+};
+window.addEventListener("resize", scheduleRedraw);
+// The stage (the setup above the pump screen) fills the viewport below the
+// header on a wide screen; the stylesheet reads the header's height from
+// --header-h (css: .stage).
+const siteHeader = $("site-header");
+const setHeaderHeight = () => document.documentElement.style.setProperty("--header-h", `${siteHeader.offsetHeight}px`);
+setHeaderHeight();
+if (typeof ResizeObserver === "function") {
+  new ResizeObserver(setHeaderHeight).observe(siteHeader);
+  new ResizeObserver(scheduleRedraw).observe($("charts"));
+}
 const darkQuery = window.matchMedia("(prefers-color-scheme: dark)");
 if (darkQuery.addEventListener) darkQuery.addEventListener("change", () => refresh(true));
 
