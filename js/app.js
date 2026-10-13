@@ -664,9 +664,10 @@ function updateFace(snap) {
   el.fallbackRate.textContent = snap.fallbackRate === null ? DASH : `${snap.fallbackRate.toFixed(decimals)} ${snap.rateUnits}`;
 
   if (snap.inFlight) {
-    // The short form of the id keeps the readout to one line (the full id
-    // is on the API card and in the wire panel).
-    el.nextRequest.textContent = `awaiting ${snap.inFlight.id.slice(-6)}`;
+    // The last four digits of the id keep the readout to one line in its
+    // column at 1100 px wide (the full id is on the API card and in the
+    // wire panel).
+    el.nextRequest.textContent = `awaiting ${snap.inFlight.id.slice(-4)}`;
   } else if (snap.nextRequestIn === null) {
     el.nextRequest.textContent = snap.started ? "not scheduled" : DASH;
   } else {
