@@ -286,7 +286,7 @@ const el = {
   // target
   targetForm: $("target-form"), targetValue: $("target-value"), targetUnits: $("target-units"),
   targetRange: $("target-range"), setTarget: $("set-target"), targetZero: $("target-zero"),
-  targetError: $("target-error"),
+  targetError: $("target-error"), pumpScreen: $("pump-screen"),
   // face
   rateValue: $("rate-value"), rateUnits: $("rate-units"), massRate: $("mass-rate"), lamp: $("lamp"),
   phase: $("phase"), plan: $("plan"), alarm: $("alarm"), holdProgress: $("hold-progress"),
@@ -340,8 +340,8 @@ function fillDrugDependentFields() {
   el.bolusUnits.textContent = info.massUnits;
   el.bolusAmount.value = drug === "propofol" ? "20" : "50";
   el.targetUnits.textContent = info.concentrationUnits;
-  el.targetRange.textContent = `Typical ${info.typicalRange.lower} to ${info.typicalRange.upper} ${info.concentrationUnits} ` +
-    `(${info.typicalTarget} is typical; above ${info.targetCeiling} the API refuses the target). A target of 0 stops the infusion.`;
+  el.targetRange.textContent = `Typical ${info.typicalRange.lower} to ${info.typicalRange.upper} ${info.concentrationUnits}; ` +
+    `above ${info.targetCeiling} the API refuses the target; 0 stops the infusion.`;
   el.targetValue.value = String(info.typicalTarget);
   el.syringeTold.value = String(preset.initial);
   el.syringeTrue.value = String(preset.initial * 2);
@@ -401,14 +401,25 @@ function readTarget() {
 
 function showError(node, message) {
   node.textContent = message || "";
+  // The setup's error line is at the bottom of a box that may scroll, and
+  // Start is in the box below it: bring a new message into view.
+  if (message && typeof node.scrollIntoView === "function") node.scrollIntoView({ block: "nearest" });
 }
 
 function setRunningUi(running) {
   const lock = [el.drug, el.concentration, el.weight, el.height, el.age, el.sex, el.maxRate, el.minRate,
     el.rateResolution, el.syringeVolume, el.declaredLatency, el.actualLatency, el.interval, el.transport, el.baseUrl];
   for (const input of lock) input.disabled = running;
+  // The pump screen's buttons: Start until it is pressed (and again once the
+  // case has ended); Stop and the target buttons while the case runs.
+  el.start.hidden = running;
   el.start.disabled = running;
+  el.stop.hidden = !running;
   el.stop.disabled = !running;
+  el.setTarget.hidden = !running;
+  el.setTarget.disabled = !running;
+  el.targetZero.hidden = !running;
+  el.targetZero.disabled = !running;
   const teaching = [el.handBolus, el.pauseResume, el.dropNext, el.changeSyringe, el.latencySlider];
   for (const b of teaching) b.disabled = !running;
 }
@@ -473,6 +484,10 @@ function startCase(event) {
   setRunningUi(true);
   startTicker();
   refresh(true);
+  // On a short viewport the pump screen sits below the setup: bring it to
+  // the top of the window so the running pump is what the user sees.
+  const screen = el.pumpScreen.getBoundingClientRect();
+  if (screen.bottom > window.innerHeight || screen.top < 0) el.pumpScreen.scrollIntoView({ block: "start" });
 }
 
 function stopCase() {
@@ -480,6 +495,10 @@ function stopCase() {
   app.ending = true;
   app.endDeadline = perfNow() + 5000;
   el.stop.disabled = true;
+  // Only the pump winding down is live now: a new target would be sent to
+  // a case about to be frozen.
+  el.setTarget.disabled = true;
+  el.targetZero.disabled = true;
   try {
     app.pump.stop();
   } catch (e) {
@@ -645,7 +664,10 @@ function updateFace(snap) {
   el.fallbackRate.textContent = snap.fallbackRate === null ? DASH : `${snap.fallbackRate.toFixed(decimals)} ${snap.rateUnits}`;
 
   if (snap.inFlight) {
-    el.nextRequest.textContent = `awaiting ${snap.inFlight.id}`;
+    // The last four digits of the id keep the readout to one line in its
+    // column at 1100 px wide (the full id is on the API card and in the
+    // wire panel).
+    el.nextRequest.textContent = `awaiting ${snap.inFlight.id.slice(-4)}`;
   } else if (snap.nextRequestIn === null) {
     el.nextRequest.textContent = snap.started ? "not scheduled" : DASH;
   } else {
@@ -658,7 +680,7 @@ function updateFace(snap) {
   const cu = snap.config.concentrationUnits;
   el.ceReadout.textContent = `${sig(snap.truth.ce, 3)} / ${sig(snap.predicted.ce, 3)} ${cu}`;
   el.cpReadout.textContent = `${sig(snap.truth.cp, 3)} ${cu}`;
-  el.targetReadout.textContent = `${snap.target.value} ${cu} (${snap.target.site === "effect" ? "effect site" : "plasma"})`;
+  el.targetReadout.textContent = `${snap.target.value} ${cu} ${snap.target.site === "effect" ? "Ce" : "Cp"}`;
 }
 
 function updateTeaching(snap) {
@@ -1045,6 +1067,17 @@ function niceCeil(v) {
   return n * Math.pow(10, exp);
 }
 
+// A finer ceiling for the rate axis (1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10 times
+// a power of ten), so a 1200 mL/hr loading rate gets a 1500 axis, not 2000.
+function niceCeilFine(v) {
+  if (!(v > 0)) return 1;
+  const exp = Math.floor(Math.log10(v));
+  const f = v / Math.pow(10, exp);
+  const steps = [1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10];
+  const n = steps.find((x) => f <= x + 1e-9);
+  return n * Math.pow(10, exp);
+}
+
 function xStep(maxMinutes) {
   for (const step of [0.5, 1, 2, 5, 10, 15, 30, 60, 120, 240]) if (maxMinutes / step <= 8) return step;
   return 480;
@@ -1079,7 +1112,9 @@ function axes(ctx, w, h, xMax, yMax, yLabel, colours, yFormat) {
   ctx.fillStyle = colours.axis;
   ctx.textAlign = "right";
   ctx.textBaseline = "middle";
-  const yTicks = 4;
+  // Fewer y ticks on a short chart (the rate chart on a wide screen can be
+  // 60 px tall), so that the labels do not overprint.
+  const yTicks = plotH >= 110 ? 4 : plotH >= 50 ? 2 : 1;
   for (let i = 0; i <= yTicks; i++) {
     const v = (yMax * i) / yTicks;
     const y = Y(v);
@@ -1092,13 +1127,17 @@ function axes(ctx, w, h, xMax, yMax, yLabel, colours, yFormat) {
   ctx.textAlign = "center";
   ctx.textBaseline = "top";
   const step = xStep(xMax);
+  let lastTickX = PAD.left;
+  let lastTickLabel = "";
   for (let m = 0; m <= xMax + 1e-9; m += step) {
     const x = X(m);
     ctx.beginPath();
     ctx.moveTo(x, PAD.top);
     ctx.lineTo(x, PAD.top + plotH);
     ctx.stroke();
-    ctx.fillText(Number(m.toFixed(2)).toString(), x, PAD.top + plotH + 5);
+    lastTickLabel = Number(m.toFixed(2)).toString();
+    lastTickX = x;
+    ctx.fillText(lastTickLabel, x, PAD.top + plotH + 5);
   }
   ctx.strokeStyle = colours.axis;
   ctx.beginPath();
@@ -1106,16 +1145,20 @@ function axes(ctx, w, h, xMax, yMax, yLabel, colours, yFormat) {
   ctx.lineTo(PAD.left, PAD.top + plotH);
   ctx.lineTo(w - PAD.right, PAD.top + plotH);
   ctx.stroke();
-  ctx.save();
-  ctx.translate(12, PAD.top + plotH / 2);
-  ctx.rotate(-Math.PI / 2);
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  ctx.fillText(yLabel, 0, 0);
-  ctx.restore();
+  if (plotH >= 40) {
+    // The legend names the units too, so a very short chart does without.
+    ctx.save();
+    ctx.translate(12, PAD.top + plotH / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(yLabel, 0, 0);
+    ctx.restore();
+  }
   ctx.textAlign = "right";
   ctx.textBaseline = "bottom";
-  ctx.fillText("minutes", w - PAD.right, h - 2);
+  // To the left of the last tick label, which is centred on the axis end.
+  ctx.fillText("minutes", lastTickX - ctx.measureText(lastTickLabel).width / 2 - 6, h - 2);
   return { X, Y, plotW, plotH };
 }
 
@@ -1161,8 +1204,8 @@ function drawCharts(snap) {
   drawCe(snap, series, xMax, colours);
   drawRate(snap, series, xMax, colours);
   if (snap) {
-    el.chartSummary.textContent = `Time axis in minutes of case time. True Ce ${sig(snap.truth.ce, 3)}, predicted ${sig(snap.predicted.ce, 3)} ` +
-      `${snap.config.concentrationUnits}; peak true Ce so far ${sig(snap.maxTrueCe, 4)} at ${clockText((snap.maxTrueCeAt - snap.caseStart) / 1000)}. The charts redraw once a second.`;
+    el.chartSummary.textContent = `Minutes of case time. True Ce ${sig(snap.truth.ce, 3)}, predicted ${sig(snap.predicted.ce, 3)} ` +
+      `${snap.config.concentrationUnits}; peak ${sig(snap.maxTrueCe, 4)} at ${clockText((snap.maxTrueCeAt - snap.caseStart) / 1000)}.`;
   }
 }
 
@@ -1211,7 +1254,7 @@ function drawRate(snap, series, xMax, colours) {
   let maxRate = 0;
   for (const p of series) if (p.rate > maxRate) maxRate = p.rate;
   const ceiling = snap ? snap.config.limits.maxRate : Number(el.maxRate.value) || 0;
-  const yMax = niceCeil(Math.max(maxRate * 1.08, 10));
+  const yMax = niceCeilFine(Math.max(maxRate * 1.08, 10));
   const { X, Y, plotW, plotH } = axes(ctx, w, h, xMax, yMax, "mL/hr", colours, (v) => String(Number(v.toFixed(1))));
   ctx.save();
   ctx.beginPath();
@@ -1272,6 +1315,10 @@ el.targetForm.addEventListener("submit", (event) => {
   }
   if (!app.pump || !app.running) {
     showError(el.targetError, "The target will be used when the case starts. Press Start.");
+    return;
+  }
+  if (app.ending) {
+    showError(el.targetError, "The case is ending; press Start to begin a new one.");
     return;
   }
   try {
@@ -1364,12 +1411,33 @@ document.addEventListener("visibilitychange", () => {
   }
 });
 
-// Redraw on resize and on a colour-scheme change.
+// Redraw on resize and on a colour-scheme change.  On a wide screen the
+// charts take whatever height the pump screen leaves them (css: .charts), so
+// a change in that box's size, not only the window's, redraws too.
 let resizeTimer = null;
-window.addEventListener("resize", () => {
+const scheduleRedraw = () => {
   clearTimeout(resizeTimer);
   resizeTimer = setTimeout(() => { app.lastDraw = 0; refresh(true); }, 100);
-});
+};
+// The stage (the setup above the pump screen) fills the viewport below the
+// header on a wide screen; the stylesheet reads the header's height from
+// --header-h (css: .stage).
+const siteHeader = $("site-header");
+const setHeaderHeight = () => document.documentElement.style.setProperty("--header-h", `${siteHeader.offsetHeight}px`);
+setHeaderHeight();
+window.addEventListener("resize", () => { setHeaderHeight(); scheduleRedraw(); });
+if (typeof ResizeObserver === "function") {
+  new ResizeObserver(setHeaderHeight).observe(siteHeader);
+  // Redraw when the charts' box changes size by more than a couple of
+  // pixels; a one-line/two-line flicker of a readout must not drive it.
+  let chartsHeight = -1;
+  new ResizeObserver((entries) => {
+    const h = entries[entries.length - 1].contentRect.height;
+    if (Math.abs(h - chartsHeight) <= 2) return;
+    chartsHeight = h;
+    scheduleRedraw();
+  }).observe($("charts"));
+}
 const darkQuery = window.matchMedia("(prefers-color-scheme: dark)");
 if (darkQuery.addEventListener) darkQuery.addEventListener("change", () => refresh(true));
 

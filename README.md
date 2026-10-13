@@ -7,7 +7,7 @@ its other limits, pick propofol or remifentanil, enter an effect-site (or
 plasma) target, and watch the pump run in real time or faster: the loading
 infusion, the pause until the effect site peaks, the hand-off to a slowly
 falling maintenance rate, and what happens on a hand bolus, a pause, a lost
-response or a wrong syringe. The left-hand panel is a running transcript of
+response or a wrong syringe. The right-hand panel is a running transcript of
 every request the pump sends to the controller and every response it gets
 back, because the point of FauxTCI is to show how a pump talks to the
 [stanpumpR TCI API](https://github.com/StevenLShafer/stanpumpR/blob/master/docs/tci-api.md).
@@ -75,21 +75,39 @@ to build.
 
 ## The page
 
+On a wide screen (1100 px and up) the page is two columns. The left two
+thirds are the setup above the pump screen; the right third is the API
+conversation. On a window 950 px or taller the two boxes are of equal
+height and fill the window below the header (the pump screen is never
+shorter than what it holds, so on a window too short for both the setup
+scrolls inside its box). On a shorter window, a laptop's, the setup takes
+its natural height and the pump screen is a window tall beneath it, and
+Start scrolls the pump screen into view. Either way the user first sees
+the pump set up, presses Start in the pump screen, and from then on sees
+what a TCI pump shows: the target, the rate, the concentrations and their
+time course, with nothing to scroll between the target and the charts. The
+teaching controls, the delivery record, the wire details and the about
+text are below the two boxes. On a narrow screen everything stacks in that
+order.
+
 * **Setup**: drug, patient (weight, height, age, sex), syringe concentration
   (propofol 10 or 20 mg/mL; remifentanil 20, 50 or 100 mcg/mL), the pump's
   maximum rate (1200 mL/hr), minimum rate (0.1), resolution (0.1), syringe
   volume (50 mL), the declared latency (1.5 s), the actual latency (1.5 s),
   the interval (10 s), the clock multiplier (1x, 5x, 10x, 60x) and the
-  controller (in page, or HTTP with a URL). Start begins a case; Stop sets
-  the target to 0, ends the case and halts the clock.
-* **Target**: effect site or plasma, in the drug's units, with the typical
-  range; a target of 0 stops the infusion.
-* **Pump face**: the rate in mL/hr with the mass rate beneath, the status
-  lamp and phase (loading, waiting for peak, maintenance, above target,
-  stopped, paused, ALARM), the segment's hold countdown and its fallback
-  rate, the next-request countdown, the syringe volume remaining and the
-  time to empty, the case clock.
-* **Charts**: effect-site concentration, true (solid) and as predicted by the
+  controller (in page, or HTTP with a URL). Start locks these for the case.
+* **Pump screen**: the target (effect site or plasma, in the drug's units,
+  with the typical range; a target of 0 stops the infusion) and the Start
+  button, which disappears once pressed; while the case runs, Set target,
+  Target 0 and Stop (which sets the target to 0, ends the case and halts
+  the clock; Start then returns for the next case). Beneath them the pump
+  face: the rate in mL/hr with the mass rate beneath, the status lamp and
+  phase (loading, waiting for peak, maintenance, above target, stopped,
+  paused, ALARM), the target, the true and predicted effect-site
+  concentrations, the true plasma concentration, the case clock, the
+  next-request countdown, the syringe volume remaining and the time to
+  empty, and the segment's hold countdown with its fallback rate. Then the
+  charts: effect-site concentration, true (solid) and as predicted by the
   controller (dashed), the target, and the true plasma concentration
   (lighter); beneath, the pump rate as a step line with the maximum rate
   dotted. Minutes of case time; propofol yellow and remifentanil blue as in
@@ -100,8 +118,8 @@ to build.
   the stanpumpR app can load to plot the same case.
 * **Wire details**: the last request and response as JSON, with the status,
   the transport in use and a one-line log of every exchange.
-* **API conversation** (left on a wide screen, below the pump face on a
-  narrow one): one card per exchange with the request and response bodies,
+* **API conversation** (the right third of a wide screen, below the pump
+  screen on a narrow one): one card per exchange with the request and response bodies,
   a one-line reading of each response, its warnings or errors, and when it
   was sent, received and applied to the pump. "Summaries only / Full JSON",
   "Copy conversation", "Clear" and a Follow toggle.
@@ -169,9 +187,16 @@ section 7 rules, and `test/pump.test.js` drives the pump through a dropped
 response, a pause, a lowered target, a wrong syringe, a background gap, a
 late or crossed response, a three-hour compaction and the dose-table export.
 `test/smoke.playwright.js` opens the page in Chromium (when Playwright is
-installed), runs a propofol case at 60x to maintenance, gives a hand bolus,
-checks for console and page errors and for horizontal overflow at 375 px,
-and writes `test-results/smoke.png`; without Playwright it skips.
+installed), checks the wide layout at 1400x1000 (the API panel on the right
+at about a third of the width, the setup and the pump screen at equal
+height with the target and the charts in the same box, neither box
+scrolling inside), checks that a Start with an invalid setup is reported
+and leaves Start in place, runs a propofol case at 60x to maintenance,
+gives a hand bolus, stops the case and starts and stops a second one,
+checks the laptop layout at 1366x768 (Start on screen before a case, the
+target and both charts on screen while it runs), checks for console and
+page errors and for horizontal overflow at 375 px, and writes
+`test-results/smoke.png`; without Playwright it skips.
 
 Run the suite with Node 22:
 
