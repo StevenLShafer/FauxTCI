@@ -94,7 +94,8 @@ order.
   (propofol 10 or 20 mg/mL; remifentanil 20, 50 or 100 mcg/mL), the pump's
   maximum rate (1200 mL/hr), minimum rate (0.1), resolution (0.1), syringe
   volume (50 mL), the declared latency (1.5 s), the actual latency (1.5 s),
-  the interval (10 s), the clock multiplier (1x, 5x, 10x, 60x) and the
+  the interval (10 s), the clock multiplier (1x, real time, the default;
+  5x, 10x or 60x to run faster) and the
   controller (in page, or HTTP with a URL). Start locks these for the case.
 * **Pump screen**: the target (effect site or plasma, in the drug's units,
   with the typical range; a target of 0 stops the infusion) and the Start
