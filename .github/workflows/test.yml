@@ -1,0 +1,20 @@
+# Run the FauxTCI test suite (node:test) on every push and pull request.
+# The Playwright smoke test skips itself when Playwright is not installed,
+# so no browser is needed here.
+name: test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # Node 22 takes glob patterns, not directories: `node --test test/`
+      # fails with "Cannot find module .../test", so the files are named.
+      - run: node --test 'test/*.js'

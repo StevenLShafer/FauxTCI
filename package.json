@@ -1,0 +1,11 @@
+{
+  "name": "fauxtci",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A simulated TCI pump in the browser, built to the stanpumpR TCI API contract",
+  "type": "module",
+  "scripts": {
+    "test": "node test/run.js"
+  },
+  "license": "MIT"
+}

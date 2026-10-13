@@ -1,0 +1,28 @@
+{
+  "generatedAt": "2026-10-12T22:02:02Z",
+  "commit": "740b5055f12c9616cac4fec869ab2b6d1b3b777a",
+  "version": "0.0.1.9002",
+  "successCases": 49,
+  "errorCases": 13,
+  "modelEntries": 16,
+  "traces": 6,
+  "maxRelativeReplayDifference": 4.59079460304248e-15,
+  "files": {
+    "models.json": {
+      "bytes": 93239,
+      "parsed": true
+    },
+    "ke0-solve.json": {
+      "bytes": 38519,
+      "parsed": true
+    },
+    "rate-cases.json": {
+      "bytes": 608591,
+      "parsed": true
+    },
+    "closed-loop.json": {
+      "bytes": 1522608,
+      "parsed": true
+    }
+  }
+}
