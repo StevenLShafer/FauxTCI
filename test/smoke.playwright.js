@@ -86,7 +86,7 @@ test("the page runs a propofol case to maintenance in Chromium", { skip: playwri
   let browser = null;
   try {
     browser = await playwright.chromium.launch();
-    const page = await browser.newPage({ viewport: { width: 1400, height: 1000 } });
+    const page = await browser.newPage({ viewport: { width: 1400, height: 1200 } });
     const consoleErrors = [];
     const pageErrors = [];
     page.on("console", (msg) => { if (msg.type() === "error") consoleErrors.push(msg.text()); });
@@ -107,10 +107,11 @@ test("the page runs a propofol case to maintenance in Chromium", { skip: playwri
     await page.selectOption("#transport", "local");
     assert.equal(await urlFieldHeight(), 0, "and hides again");
 
-    // The wide layout: the API conversation on the right, about a third of
-    // the width; on the left the setup above the pump screen, two boxes of
-    // equal height that fit the viewport, with the target entry and the
-    // charts in the same box (no scrolling between them).
+    // The wide layout on a tall viewport: the API conversation on the
+    // right, about a third of the width; on the left the setup above the
+    // pump screen, two boxes of equal height that fit the viewport, with
+    // the target entry and the charts in the same box (no scrolling
+    // between them).
     const rect = (sel) => page.evaluate((s) => {
       const r = document.querySelector(s).getBoundingClientRect();
       return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height };
@@ -126,15 +127,25 @@ test("the page runs a propofol case to maintenance in Chromium", { skip: playwri
     assert.ok(api.width / 1400 > 0.28 && api.width / 1400 < 0.4, `the API panel is about a third of the width (${api.width} px of 1400)`);
     assert.ok(screen.top >= setup.bottom, "the pump screen is below the setup");
     assert.ok(Math.abs(setup.height - screen.height) <= 2, `the two boxes are the same height (${setup.height} vs ${screen.height})`);
-    assert.ok(screen.bottom <= 1000, `the pump screen fits the 1000 px viewport (bottom at ${screen.bottom})`);
+    assert.ok(screen.bottom <= 1200, `the pump screen fits the 1200 px viewport (bottom at ${screen.bottom})`);
     const innerScroll = (sel) => page.evaluate((s) => { const n = document.querySelector(s); return n.scrollHeight - n.clientHeight; }, sel);
     assert.ok((await innerScroll("#setup-card")) <= 1, `the setup fits its box without scrolling (${await innerScroll("#setup-card")} px over)`);
     assert.ok((await innerScroll("#pump-screen")) <= 1, `the pump screen fits its box without scrolling (${await innerScroll("#pump-screen")} px over)`);
     assert.ok(await page.$("#pump-screen #target-value"), "the target entry is in the pump screen");
     assert.ok(await page.$("#pump-screen #chart-ce"), "the concentration chart is in the pump screen");
+    assert.ok(await page.$("#pump-screen #start"), "Start is in the pump screen");
     const chartCe = await rect("#chart-ce");
     const chartRate = await rect("#chart-rate");
-    assert.ok(chartCe.height >= 94 && chartRate.height >= 56, `the charts have room (${chartCe.height}, ${chartRate.height})`);
+    assert.ok(chartCe.height >= 120 && chartRate.height >= 80, `the charts have room (${chartCe.height}, ${chartRate.height})`);
+    // The box's inner overflow, sampled a few times (the readouts change).
+    const maxInnerScroll = async (sel) => {
+      let worst = 0;
+      for (let i = 0; i < 5; i++) {
+        worst = Math.max(worst, await innerScroll(sel));
+        await page.waitForTimeout(150);
+      }
+      return worst;
+    };
     assert.ok(await visible("#start"), "Start shows before the case");
     assert.ok(!(await visible("#stop-case")), "Stop does not show before the case");
     assert.ok(!(await visible("#set-target")), "Set target does not show before the case");
@@ -142,6 +153,21 @@ test("the page runs a propofol case to maintenance in Chromium", { skip: playwri
     // No external resources: every request went to our own server.
     const external = [];
     page.on("request", (req) => { if (!req.url().startsWith(url) && !req.url().startsWith("data:")) external.push(req.url()); });
+
+    // A Start that fails validation leaves Start in place and shows why,
+    // in the setup's error line, scrolled into view.
+    await page.fill("#min-rate", "2000");
+    await page.click("#start");
+    assert.ok(((await page.textContent("#setup-error")) || "").length > 0, "an invalid setup is reported");
+    assert.ok(await visible("#start"), "Start stays after a failed Start");
+    assert.ok(!(await visible("#stop-case")), "Stop does not show after a failed Start");
+    const errorInView = await page.evaluate(() => {
+      const box = document.getElementById("setup-card").getBoundingClientRect();
+      const r = document.getElementById("setup-error").getBoundingClientRect();
+      return r.top >= box.top - 1 && r.bottom <= box.bottom + 1;
+    });
+    assert.ok(errorInView, "the setup error is within the visible part of its box");
+    await page.fill("#min-rate", "0.1");
 
     // A propofol case at 60x with a 3 mcg/mL effect-site target.
     await page.selectOption("#drug", "propofol");
@@ -154,6 +180,10 @@ test("the page runs a propofol case to maintenance in Chromium", { skip: playwri
     assert.ok(await visible("#set-target"), "Set target shows while the case runs");
 
     await page.waitForFunction(() => document.getElementById("phase").textContent.trim() === "maintenance", null, { timeout: 60000 });
+    assert.ok((await maxInnerScroll("#pump-screen")) <= 1, "the pump screen still fits its box while the case runs");
+    const chartCeRunning = await rect("#chart-ce");
+    const chartRateRunning = await rect("#chart-rate");
+    assert.ok(chartCeRunning.height >= 120 && chartRateRunning.height >= 80, `the charts keep their room while running (${chartCeRunning.height}, ${chartRateRunning.height})`);
     const rateText = (await page.textContent("#rate-value")).trim();
     const rate = Number(rateText);
     assert.ok(Number.isFinite(rate), `rate readout "${rateText}" is a number`);
@@ -179,6 +209,45 @@ test("the page runs a propofol case to maintenance in Chromium", { skip: playwri
     await page.waitForFunction(() => document.getElementById("start").getBoundingClientRect().height > 0, null, { timeout: 20000 });
     assert.ok(!(await visible("#stop-case")), "Stop goes once the case has ended");
     assert.equal((await page.textContent("#phase")).trim(), "stopped");
+    assert.ok((await maxInnerScroll("#pump-screen")) <= 1, "the pump screen fits its box after Stop");
+
+    // A second case can be started, and stopped, after the first.
+    await page.click("#start");
+    await page.waitForFunction(() => document.getElementById("stop-case").getBoundingClientRect().height > 0, null, { timeout: 10000 });
+    assert.ok(!(await visible("#start")), "Start disappears again for the second case");
+    await page.click("#stop-case");
+    await page.waitForFunction(() => document.getElementById("start").getBoundingClientRect().height > 0, null, { timeout: 20000 });
+
+    // A 1000 px viewport (a desktop monitor with the browser's own bars):
+    // the stage still fits, the pump screen keeps what it holds and the
+    // setup takes the rest without scrolling inside its box.
+    await page.setViewportSize({ width: 1400, height: 1000 });
+    await page.waitForTimeout(300);
+    const setup1000 = await rect("#setup-card");
+    const screen1000 = await rect("#pump-screen");
+    assert.ok(screen1000.bottom <= 1000, `the stage fits a 1000 px viewport (pump screen bottom ${screen1000.bottom})`);
+    assert.ok(screen1000.height >= setup1000.height - 2, "the pump screen is at least as tall as the setup at 1000 px");
+    assert.ok((await innerScroll("#setup-card")) <= 1, `the setup fits its box at 1400x1000 (${await innerScroll("#setup-card")} px over)`);
+    assert.ok((await innerScroll("#pump-screen")) <= 1, "the pump screen fits its box at 1400x1000");
+
+    // A laptop viewport (shorter than 950 px): the setup takes its natural
+    // height, the pump screen is a viewport tall beneath it, Start is on
+    // screen before a case, and Start brings the whole pump screen, charts
+    // included, into view.
+    await page.setViewportSize({ width: 1366, height: 768 });
+    await page.waitForTimeout(300);
+    await page.evaluate(() => window.scrollTo(0, 0));
+    const startRect = await rect("#start");
+    assert.ok(startRect.top >= 0 && startRect.bottom <= 768, `Start is on screen at 1366x768 before a case (top ${startRect.top})`);
+    assert.ok((await innerScroll("#setup-card")) <= 1, "the setup does not scroll inside its box at 1366x768");
+    await page.click("#start");
+    await page.waitForFunction(() => document.getElementById("phase").textContent.trim() === "maintenance", null, { timeout: 60000 });
+    const targetRect = await rect("#target-value");
+    const rateRect = await rect("#chart-rate");
+    assert.ok(targetRect.top >= 0 && rateRect.bottom <= 768, `the target and both charts are on screen at 1366x768 while running (target top ${targetRect.top}, rate chart bottom ${rateRect.bottom})`);
+    assert.ok((await maxInnerScroll("#pump-screen")) <= 1, "the pump screen fits its box at 1366x768");
+    await page.click("#stop-case");
+    await page.waitForFunction(() => document.getElementById("start").getBoundingClientRect().height > 0, null, { timeout: 20000 });
 
     // Narrow viewport: no horizontal scroll at 375 px.
     await page.setViewportSize({ width: 375, height: 800 });

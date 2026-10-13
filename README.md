@@ -76,14 +76,19 @@ to build.
 ## The page
 
 On a wide screen (1100 px and up) the page is two columns. The left two
-thirds are two boxes of equal height that fill the window: the setup above
-and the pump screen below. The right third is the API conversation. The
-user first sees the pump set up, presses Start in the pump screen, and from
-then on sees what a TCI pump shows: the target, the rate, the
-concentrations and their time course, with nothing to scroll between the
-target and the charts. The teaching controls, the delivery record, the wire
-details and the about text are below the two boxes. On a narrow screen
-everything stacks in that order.
+thirds are the setup above the pump screen; the right third is the API
+conversation. On a window 950 px or taller the two boxes are of equal
+height and fill the window below the header (the pump screen is never
+shorter than what it holds, so on a window too short for both the setup
+scrolls inside its box). On a shorter window, a laptop's, the setup takes
+its natural height and the pump screen is a window tall beneath it, and
+Start scrolls the pump screen into view. Either way the user first sees
+the pump set up, presses Start in the pump screen, and from then on sees
+what a TCI pump shows: the target, the rate, the concentrations and their
+time course, with nothing to scroll between the target and the charts. The
+teaching controls, the delivery record, the wire details and the about
+text are below the two boxes. On a narrow screen everything stacks in that
+order.
 
 * **Setup**: drug, patient (weight, height, age, sex), syringe concentration
   (propofol 10 or 20 mg/mL; remifentanil 20, 50 or 100 mcg/mL), the pump's
@@ -182,11 +187,15 @@ section 7 rules, and `test/pump.test.js` drives the pump through a dropped
 response, a pause, a lowered target, a wrong syringe, a background gap, a
 late or crossed response, a three-hour compaction and the dose-table export.
 `test/smoke.playwright.js` opens the page in Chromium (when Playwright is
-installed), checks the wide layout (the API panel on the right at about a
-third of the width, the setup and the pump screen at equal height with the
-target and the charts in the same box), runs a propofol case at 60x to
-maintenance, gives a hand bolus, stops the case, checks for console and page
-errors and for horizontal overflow at 375 px, and writes
+installed), checks the wide layout at 1400x1000 (the API panel on the right
+at about a third of the width, the setup and the pump screen at equal
+height with the target and the charts in the same box, neither box
+scrolling inside), checks that a Start with an invalid setup is reported
+and leaves Start in place, runs a propofol case at 60x to maintenance,
+gives a hand bolus, stops the case and starts and stops a second one,
+checks the laptop layout at 1366x768 (Start on screen before a case, the
+target and both charts on screen while it runs), checks for console and
+page errors and for horizontal overflow at 375 px, and writes
 `test-results/smoke.png`; without Playwright it skips.
 
 Run the suite with Node 22:

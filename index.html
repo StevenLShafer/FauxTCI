@@ -98,7 +98,7 @@
                 <input id="interval" name="interval" type="number" inputmode="decimal" min="1" max="60" step="1" value="10">
               </div>
             </div>
-            <p class="hint">Latency: declared is the request's <code>timing.latency</code>, actual is what the simulated pump really takes (make them differ to teach the cost). Interval: how long each rate is held, <code>timing.interval</code> (STANPUMP: 10 s).</p>
+            <p class="hint">Declared latency is the request's <code>timing.latency</code>; actual is what the pump really takes (differ them to teach the cost); the interval is how long each rate is held (STANPUMP: 10 s).</p>
           </details>
 
           <div class="field-grid">
@@ -111,7 +111,7 @@
                 <option value="60">60x</option>
               </select>
             </div>
-            <div class="field">
+            <div class="field field-2">
               <label for="transport">Controller</label>
               <select id="transport" name="transport">
                 <option value="local" selected>In this page (JavaScript port)</option>
@@ -123,9 +123,8 @@
               <input id="base-url" name="baseUrl" type="url" inputmode="url" placeholder="http://127.0.0.1:8000" spellcheck="false">
               <p class="hint">The page will POST to <code>&lt;URL&gt;/tci/v1/drugs/&lt;drug&gt;/rate</code>. The server must allow this page's origin (CORS): <code>stanpumpR::run_tci_api()</code> sends no CORS headers, so put a proxy in front of it that adds them, or add a Plumber filter in a development session. Never on a production ingress.</p>
             </div>
-            <p class="hint field-wide">The clock is the simulated time against the wall clock; it can be changed during a case. The controller is the JavaScript port in this page, or a stanpumpR server over HTTP.</p>
           </div>
-
+          <p class="hint setup-hint">Start locks these for the case; the clock can still be changed. Stop sets the target to 0 and halts the clock; the record stays until the next Start.</p>
           <p class="form-error" id="setup-error" role="alert"></p>
         </form>
       </section>
@@ -163,8 +162,8 @@
             <div class="rate-readout" aria-label="Running rate">
               <span class="rate-big" id="rate-value">0.0</span>
               <span class="rate-units" id="rate-units">mL/hr</span>
+              <span class="mass-rate" id="mass-rate">0 mg/hr</span>
             </div>
-            <div class="mass-rate" id="mass-rate">0 mg/hr</div>
             <div class="status-row">
               <span class="lamp" id="lamp" data-state="standby" aria-hidden="true"></span>
               <span class="phase" id="phase" role="status" aria-live="polite">standby</span>
@@ -173,13 +172,13 @@
           </div>
           <dl class="face-grid">
             <div><dt>Target</dt><dd id="target-readout">&mdash;</dd></div>
-            <div><dt>Ce true / predicted</dt><dd id="ce-readout">&mdash;</dd></div>
+            <div><dt>Ce true / pred.</dt><dd id="ce-readout">&mdash;</dd></div>
             <div><dt>Cp true</dt><dd id="cp-readout">&mdash;</dd></div>
             <div><dt>Case clock</dt><dd id="case-clock">00:00</dd></div>
-            <div><dt>Next request in</dt><dd id="next-request">&mdash;</dd></div>
-            <div><dt>Syringe remaining</dt><dd id="syringe-remaining">&mdash;</dd></div>
+            <div><dt>Next request</dt><dd id="next-request">&mdash;</dd></div>
+            <div><dt>Syringe left</dt><dd id="syringe-remaining">&mdash;</dd></div>
             <div><dt>Time to empty</dt><dd id="time-to-empty">&mdash;</dd></div>
-            <div><dt>Simulated time (UTC)</dt><dd id="sim-clock">&mdash;</dd></div>
+            <div><dt>Simulated (UTC)</dt><dd id="sim-clock">&mdash;</dd></div>
           </dl>
           <div class="alarm" id="alarm" role="alert" aria-live="assertive"></div>
           <div class="segment">
@@ -202,13 +201,13 @@
             <li><span class="swatch swatch-light" id="swatch-cp"></span> true Cp</li>
             <li><span class="swatch swatch-thin" id="swatch-target"></span> target</li>
           </ul>
-          <canvas id="chart-ce" class="chart" role="img" aria-label="Effect-site and plasma concentration against case time"></canvas>
+          <div class="chart-box chart-box-ce"><canvas id="chart-ce" class="chart" role="img" aria-label="Effect-site and plasma concentration against case time"></canvas></div>
           <ul class="legend" aria-label="Legend, rate chart">
             <li><span class="swatch swatch-solid swatch-rate"></span> pump rate (mL/hr)</li>
             <li><span class="swatch swatch-dotted swatch-ceiling"></span> maximum rate</li>
             <li class="legend-note" id="chart-summary">Minutes of case time; redrawn once a second.</li>
           </ul>
-          <canvas id="chart-rate" class="chart chart-rate" role="img" aria-label="Pump rate against case time"></canvas>
+          <div class="chart-box chart-box-rate"><canvas id="chart-rate" class="chart chart-rate" role="img" aria-label="Pump rate against case time"></canvas></div>
         </div>
       </section>
 
