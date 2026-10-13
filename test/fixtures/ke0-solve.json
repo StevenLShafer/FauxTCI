@@ -1,0 +1,1117 @@
+{
+  "generatedAt": "2026-10-12T22:02:02Z",
+  "stanpumpRCommit": "740b5055f12c9616cac4fec869ab2b6d1b3b777a",
+  "stanpumpRVersion": "0.0.1.9002",
+  "rVersion": "R version 4.3.3 (2024-02-29)",
+  "optimizer": {
+    "outer": {
+      "fn": "stats::optimize",
+      "objective": "tPeakError",
+      "interval": [0, 200],
+      "tol": 0.0001220703125,
+      "maximum": false,
+      "result": "$minimum"
+    },
+    "inner": {
+      "fn": "stats::optimize",
+      "objective": "CE",
+      "interval": [0, 100],
+      "tol": 0.0001220703125,
+      "maximum": true,
+      "result": "$maximum"
+    },
+    "brentGoldenConstant": 0.381966011250105,
+    "brentEps": 1.49011611938477e-08
+  },
+  "notes": "HOW ke0 IS DERIVED FROM tPeak (R/getDrugPK.R).  For an IV drug (tPeakRoute 'IV', no X$ke0 supplied) getDrugPK() runs   ke0 <- stats::optimize(tPeakError, c(0, 200), tPeak, p_coef_bolus_l1, p_coef_bolus_l2, p_coef_bolus_l3, lambda_1, lambda_2, lambda_3)$minimum i.e. Brent's fmin on the interval [0, 200] /min with the DEFAULT tolerance tol = .Machine$double.eps^0.25 = 2^-13 = 0.0001220703125 (absolute, in ke0 units).  The objective tPeakError(lambda_4 = ke0, tPeak, p1, p2, p3, l1, l2, l3) is:   e_i = p_i * ke0 / (ke0 - l_i) for the three plasma exponentials (e_2, e_3 are 0 when l_2, l_3 are 0), e_4 = -(e_1 + e_2 + e_3);   predPeak = stats::optimize(CE, c(0, 100), e_1, e_2, e_3, e_4, l_1, l_2, l_3, ke0, maximum = TRUE)$maximum, where   CE(t) = e_1 exp(-l_1 t) + e_2 exp(-l_2 t) + e_3 exp(-l_3 t) + e_4 exp(-ke0 t) is the effect-site concentration after a   UNIT IV BOLUS (the plasma curve is the bolus response sum p_i exp(-l_i t), p_i = p_coef_bolus_li);   return (tPeak - predPeak)^2. So it is a NESTED Brent minimisation: the inner optimize (maximum = TRUE, interval [0, 100] min, same default tol) finds the peak time of the unit-bolus effect-site curve for a trial ke0; the outer one minimises the squared miss of tPeak. stats::optimize(maximum = TRUE) minimises function(arg) -f(arg, ...) and returns list(maximum = argmin, objective = f(argmin)). The C routine is Brent_fmin() in R's src/library/stats/src/optimize.c (Netlib FMIN, Forsythe-Malcolm-Moler):   c = (3 - sqrt(5))/2; eps = sqrt(DBL_EPSILON); x = v = w = a + c (b - a); fx = f(x); d = e = 0; tol3 = tol/3;   loop: xm = (a+b)/2; tol1 = eps |x| + tol3; t2 = 2 tol1; stop when |x - xm| <= t2 - (b - a)/2;   if |e| > tol1 fit a parabola through (v,fv),(w,fw),(x,fx): r = (x-w)(fx-fv); q = (x-v)(fx-fw); p = (x-v) q - (x-w) r;   q = 2 (q - r); if q > 0 then p = -p else q = -q; r = e; e = d;   golden-section step (e = (x < xm ? b : a) - x; d = c e) when |p| >= |q r / 2| or p <= q (a - x) or p >= q (b - x),   else parabolic step d = p/q, u = x + d, and if u - a < t2 or b - u < t2 then d = (x >= xm ? -tol1 : tol1);   u = x + d if |d| >= tol1 else x +/- tol1 (sign of d); fu = f(u);   if fu <= fx: (u < x ? b = x : a = x); v = w; w = x; x = u; fv = fw; fw = fx; fx = fu;   else: (u < x ? a = u : b = u); if fu <= fw or w == x: v = w, fv = fw, w = u, fw = fu; else if fu <= fv or v == x or v == w: v = u, fv = fu.   return x. The pure-R transcription brentFmin() in generate.R, applied to BOTH levels, reproduced every ke0 in this file bit for bit (see pureRBrentIdentical), so a JavaScript port of the same algorithm with the same tolerance should match R's ke0 to within a few ulps whenever its exp() agrees with R's libm; a last-bit difference in exp() can in principle change a branch and move the result by up to the stopping width (about 2 tol1 = 2 (sqrt(eps) |ke0| + tol/3), i.e. ~8e-5 absolute). ACHIEVABLE ACCURACY WITHOUT PORTING BRENT: because the outer tolerance is absolute 1.22e-4 and the inner peak time is itself only resolved to ~4e-5 min, R's ke0 is NOT the exact root.  `ke0Exact` is the ke0 whose exact (uniroot, tol 1e-14) peak time equals tPeak; `ke0ExactRelativeDifference` shows how far R's value is from it (of order 1e-5 to 1e-4 relative). A port using a different (better) optimizer should therefore expect agreement with R's ke0 only to that order; to validate coefficients and controller output independently of the solve, inject R's ke0 from models.json. ROUND TRIP: `roundTrip.peakTimeInnerOptimize` is the inner optimizer's peak time for R's ke0 (what the solve 'saw'); `roundTrip.peakTimeExact` is the true peak time of the unit-bolus Ce curve for that ke0; `ceAtPeak*` is Ce there (its reciprocal is getDrugPK()'s vdPeakEffect).  `objectiveSamples` give tPeakError() and the inner predPeak at ke0 x {0.5, 0.8, 0.95, 1, 1.05, 1.25, 2} so a port can check its objective function (including the inner optimizer) directly. Both drugs: tPeak = 1.6 min (propofol: Schnider 1999; remifentanil: 'Opioid simulation spreadsheet'), tPeakRoute IV.",
+  "entries": [
+    {
+      "drug": "propofol",
+      "patientId": "adult-male-70",
+      "patient": {
+        "weight": 70,
+        "height": 170,
+        "age": 50,
+        "sex": "male"
+      },
+      "tPeak": 1.6,
+      "inputs": {
+        "p_coef_bolus": [0.150054137097034, 0.00839803395653969, 0.000705488264907363],
+        "lambda": [0.628049339579614, 0.0430588083155251, 0.00334925065328223]
+      },
+      "ke0": 0.687117506509047,
+      "ke0Resolved": 0.687117506509047,
+      "resolveIdentical": true,
+      "ke0PureRBrent": 0.687117506509047,
+      "pureRBrentIdentical": true,
+      "objectiveAtKe0": 2.78985796645183e-10,
+      "e_coef_bolus": [1.74552267123266, 0.00895948795968594, 0.000708943905048432, -1.7551911030974],
+      "roundTrip": {
+        "peakTimeInnerOptimize": 1.59998329713208,
+        "ceAtPeakInnerOptimize": 0.063474700678211,
+        "peakTimeExact": 1.59997468113165,
+        "ceAtPeakExact": 0.0634747006790997,
+        "peakTimeMinusTPeak": -2.53188683545513e-05
+      },
+      "ke0Exact": 0.687097048532401,
+      "ke0ExactRelativeDifference": -2.977362161792e-05,
+      "objectiveSamples": [
+        {
+          "ke0": 0.343558753254523,
+          "predPeak": 2.27744238786588,
+          "objective": 0.45892818887743
+        },
+        {
+          "ke0": 0.549694005207237,
+          "predPeak": 1.79845841751953,
+          "objective": 0.0393857434843568
+        },
+        {
+          "ke0": 0.652761631183594,
+          "predPeak": 1.64405161725512,
+          "objective": 0.00194054498279199
+        },
+        {
+          "ke0": 0.687117506509047,
+          "predPeak": 1.59998329713208,
+          "objective": 2.78985796645183e-10
+        },
+        {
+          "ke0": 0.721473381834499,
+          "predPeak": 1.5588799152053,
+          "objective": 0.00169086137349311
+        },
+        {
+          "ke0": 0.858896883136309,
+          "predPeak": 1.41862797595235,
+          "objective": 0.0328958111073515
+        },
+        {
+          "ke0": 1.37423501301809,
+          "predPeak": 1.08862549822493,
+          "objective": 0.261503881065697
+        }
+      ]
+    },
+    {
+      "drug": "propofol",
+      "patientId": "adult-female-60",
+      "patient": {
+        "weight": 60,
+        "height": 165,
+        "age": 35,
+        "sex": "female"
+      },
+      "tPeak": 1.6,
+      "inputs": {
+        "p_coef_bolus": [0.159109326613608, 0.00802946107369478, 0.000613875121221414],
+        "lambda": [0.693795614213211, 0.042283841630657, 0.00357980274977948]
+      },
+      "ke0": 0.621977731975491,
+      "ke0Resolved": 0.621977731975491,
+      "resolveIdentical": true,
+      "ke0PureRBrent": 0.621977731975491,
+      "pureRBrentIdentical": true,
+      "objectiveAtKe0": 2.73187601938418e-11,
+      "e_coef_bolus": [-1.37796402539007, 0.008615143389956, 0.000617428742187967, 1.36873145325793],
+      "roundTrip": {
+        "peakTimeInnerOptimize": 1.59999477326486,
+        "ceAtPeakInnerOptimize": 0.0605471576934649,
+        "peakTimeExact": 1.59998615696121,
+        "ceAtPeakExact": 0.0605471576943122,
+        "peakTimeMinusTPeak": -1.384303879437e-05
+      },
+      "ke0Exact": 0.621967302080886,
+      "ke0ExactRelativeDifference": -1.67689196386641e-05,
+      "objectiveSamples": [
+        {
+          "ke0": 0.310988865987745,
+          "predPeak": 2.25411639447321,
+          "objective": 0.427868257518631
+        },
+        {
+          "ke0": 0.497582185580393,
+          "predPeak": 1.79230908558141,
+          "objective": 0.0369827843971582
+        },
+        {
+          "ke0": 0.590878845376716,
+          "predPeak": 1.64275661495272,
+          "objective": 0.00182812812221502
+        },
+        {
+          "ke0": 0.621977731975491,
+          "predPeak": 1.59999477326486,
+          "objective": 2.73187601938418e-11
+        },
+        {
+          "ke0": 0.653076618574265,
+          "predPeak": 1.56007481419672,
+          "objective": 0.00159402046142622
+        },
+        {
+          "ke0": 0.777472164969363,
+          "predPeak": 1.42359834810324,
+          "objective": 0.0311175427919047
+        },
+        {
+          "ke0": 1.24395546395098,
+          "predPeak": 1.10056659638426,
+          "objective": 0.249433724647901
+        }
+      ]
+    },
+    {
+      "drug": "propofol",
+      "patientId": "obese-male-100",
+      "patient": {
+        "weight": 100,
+        "height": 180,
+        "age": 60,
+        "sex": "male"
+      },
+      "tPeak": 1.6,
+      "inputs": {
+        "p_coef_bolus": [0.136699491961722, 0.00647718520061673, 0.000509975874066089],
+        "lambda": [0.669760889239386, 0.0417928193890933, 0.00343386394190734]
+      },
+      "ke0": 0.639126089513505,
+      "ke0Resolved": 0.639126089513505,
+      "resolveIdentical": true,
+      "ke0PureRBrent": 0.639126089513505,
+      "pureRBrentIdentical": true,
+      "objectiveAtKe0": 3.81849855480802e-12,
+      "e_coef_bolus": [-2.85192697578389, 0.00693036576961919, 0.000512730647043883, 2.84448387936723],
+      "roundTrip": {
+        "peakTimeInnerOptimize": 1.59999804590211,
+        "ceAtPeakInnerOptimize": 0.0533790536808921,
+        "peakTimeExact": 1.59998952559928,
+        "ceAtPeakExact": 0.0533790536816253,
+        "peakTimeMinusTPeak": -1.04744007194402e-05
+      },
+      "ke0Exact": 0.639118022120565,
+      "ke0ExactRelativeDifference": -1.26225373560735e-05,
+      "objectiveSamples": [
+        {
+          "ke0": 0.319563044756752,
+          "predPeak": 2.2569358445044,
+          "objective": 0.431564703794713
+        },
+        {
+          "ke0": 0.511300871610804,
+          "predPeak": 1.79329378131123,
+          "objective": 0.0373624858906291
+        },
+        {
+          "ke0": 0.607169785037829,
+          "predPeak": 1.64298217163791,
+          "objective": 0.00184746707835312
+        },
+        {
+          "ke0": 0.639126089513505,
+          "predPeak": 1.59999804590211,
+          "objective": 3.81849855480802e-12
+        },
+        {
+          "ke0": 0.67108239398918,
+          "predPeak": 1.55986971165435,
+          "objective": 0.00161044004246594
+        },
+        {
+          "ke0": 0.798907611891881,
+          "predPeak": 1.42268504385342,
+          "objective": 0.0314405936732621
+        },
+        {
+          "ke0": 1.27825217902701,
+          "predPeak": 1.0981298229791,
+          "objective": 0.251873674582992
+        }
+      ]
+    },
+    {
+      "drug": "propofol",
+      "patientId": "obese-female-120",
+      "patient": {
+        "weight": 120,
+        "height": 175,
+        "age": 45,
+        "sex": "female"
+      },
+      "tPeak": 1.6,
+      "inputs": {
+        "p_coef_bolus": [0.132911925343637, 0.00444876741901134, 0.000309457830725693],
+        "lambda": [0.847256970661122, 0.0376336392489887, 0.00358451656494047]
+      },
+      "ke0": 0.490380989833048,
+      "ke0Resolved": 0.490380989833048,
+      "resolveIdentical": true,
+      "ke0PureRBrent": 0.490380989833048,
+      "pureRBrentIdentical": true,
+      "objectiveAtKe0": 2.59960133356841e-11,
+      "e_coef_bolus": [-0.182633421726492, 0.00481856153913981, 0.00031173651757184, 0.177503123669781],
+      "roundTrip": {
+        "peakTimeInnerOptimize": 1.59999490137188,
+        "ceAtPeakInnerOptimize": 0.0387602065420165,
+        "peakTimeExact": 1.59998637083263,
+        "ceAtPeakExact": 0.0387602065425373,
+        "peakTimeMinusTPeak": -1.36291673742406e-05
+      },
+      "ke0Exact": 0.49037225219607,
+      "ke0ExactRelativeDifference": -1.78180581216906e-05,
+      "objectiveSamples": [
+        {
+          "ke0": 0.245190494916524,
+          "predPeak": 2.19663667429183,
+          "objective": 0.355975321108547
+        },
+        {
+          "ke0": 0.392304791866439,
+          "predPeak": 1.77727475020448,
+          "objective": 0.0314263370600599
+        },
+        {
+          "ke0": 0.465861940341396,
+          "predPeak": 1.63957081903063,
+          "objective": 0.00156584971885532
+        },
+        {
+          "ke0": 0.490380989833048,
+          "predPeak": 1.59999490137188,
+          "objective": 2.59960133356841e-11
+        },
+        {
+          "ke0": 0.514900039324701,
+          "predPeak": 1.56296196922477,
+          "objective": 0.0013718157237072
+        },
+        {
+          "ke0": 0.612976237291311,
+          "predPeak": 1.43570039910325,
+          "objective": 0.0269943588548328
+        },
+        {
+          "ke0": 0.980761979666097,
+          "predPeak": 1.12984859474529,
+          "objective": 0.221042343855766
+        }
+      ]
+    },
+    {
+      "drug": "propofol",
+      "patientId": "child-male-20",
+      "patient": {
+        "weight": 20,
+        "height": 110,
+        "age": 5,
+        "sex": "male"
+      },
+      "tPeak": 1.6,
+      "inputs": {
+        "p_coef_bolus": [0.262002361886793, 0.0244312052832299, 0.00164914449910202],
+        "lambda": [0.708496390342289, 0.0450523176836487, 0.00306324351305548]
+      },
+      "ke0": 0.656925813318205,
+      "ke0Resolved": 0.656925813318205,
+      "resolveIdentical": true,
+      "ke0PureRBrent": 0.656925813318205,
+      "pureRBrentIdentical": true,
+      "objectiveAtKe0": 7.00427927437206e-12,
+      "e_coef_bolus": [-3.33748669504685, 0.0262300778110766, 0.00165687048224014, 3.30959974675353],
+      "roundTrip": {
+        "peakTimeInnerOptimize": 1.59999735344011,
+        "ceAtPeakInnerOptimize": 0.108705725436079,
+        "peakTimeExact": 1.59998795177445,
+        "ceAtPeakExact": 0.108705725437844,
+        "peakTimeMinusTPeak": -1.20482255476784e-05
+      },
+      "ke0Exact": 0.656916614054961,
+      "ke0ExactRelativeDifference": -1.40035039829069e-05,
+      "objectiveSamples": [
+        {
+          "ke0": 0.328462906659102,
+          "predPeak": 2.29810739357854,
+          "objective": 0.487353932969026
+        },
+        {
+          "ke0": 0.525540650654564,
+          "predPeak": 1.80171131444872,
+          "objective": 0.0406874543766296
+        },
+        {
+          "ke0": 0.624079522652294,
+          "predPeak": 1.64462553783735,
+          "objective": 0.00199143862727283
+        },
+        {
+          "ke0": 0.656925813318205,
+          "predPeak": 1.59999735344011,
+          "objective": 7.00427927437206e-12
+        },
+        {
+          "ke0": 0.689772103984115,
+          "predPeak": 1.55845574917796,
+          "objective": 0.00172592477636472
+        },
+        {
+          "ke0": 0.821157266647756,
+          "predPeak": 1.41715489949301,
+          "objective": 0.0334323307789899
+        },
+        {
+          "ke0": 1.31385162663641,
+          "predPeak": 1.08705001400359,
+          "objective": 0.263117688133719
+        }
+      ]
+    },
+    {
+      "drug": "propofol",
+      "patientId": "elderly-female-85",
+      "patient": {
+        "weight": 85,
+        "height": 175,
+        "age": 80,
+        "sex": "female"
+      },
+      "tPeak": 1.6,
+      "inputs": {
+        "p_coef_bolus": [0.141451043022267, 0.0081190550683641, 0.000486969297216635],
+        "lambda": [0.573717835948615, 0.0505533020249189, 0.00442036349163771]
+      },
+      "ke0": 0.740751123975884,
+      "ke0Resolved": 0.740751123975884,
+      "resolveIdentical": true,
+      "ke0PureRBrent": 0.740751123975884,
+      "pureRBrentIdentical": true,
+      "objectiveAtKe0": 2.27698870069436e-10,
+      "e_coef_bolus": [0.627300224666593, 0.00871373246370529, 0.000489892686294594, -0.636503849816593],
+      "roundTrip": {
+        "peakTimeInnerOptimize": 1.60001508969418,
+        "ceAtPeakInnerOptimize": 0.0644582162588605,
+        "peakTimeExact": 1.60000661756435,
+        "ceAtPeakExact": 0.0644582162597321,
+        "peakTimeMinusTPeak": 6.61756435227367e-06
+      },
+      "ke0Exact": 0.740756779039655,
+      "ke0ExactRelativeDifference": 7.63422907865657e-06,
+      "objectiveSamples": [
+        {
+          "ke0": 0.370375561987942,
+          "predPeak": 2.29173061826993,
+          "objective": 0.478491248252094
+        },
+        {
+          "ke0": 0.592600899180708,
+          "predPeak": 1.80249467654234,
+          "objective": 0.0410040940279857
+        },
+        {
+          "ke0": 0.70371356777709,
+          "predPeak": 1.64494584343372,
+          "objective": 0.00202012884196865
+        },
+        {
+          "ke0": 0.740751123975884,
+          "predPeak": 1.60001508969418,
+          "objective": 2.27698870069436e-10
+        },
+        {
+          "ke0": 0.777788680174679,
+          "predPeak": 1.55812445358413,
+          "objective": 0.00175356138762774
+        },
+        {
+          "ke0": 0.925938904969856,
+          "predPeak": 1.41532330953047,
+          "objective": 0.0341054800027798
+        },
+        {
+          "ke0": 1.48150224795177,
+          "predPeak": 1.08045276402663,
+          "objective": 0.269929330407569
+        }
+      ]
+    },
+    {
+      "drug": "propofol",
+      "patientId": "young-female-45",
+      "patient": {
+        "weight": 45,
+        "height": 160,
+        "age": 25,
+        "sex": "female"
+      },
+      "tPeak": 1.6,
+      "inputs": {
+        "p_coef_bolus": [0.1771556367613, 0.00987007246027898, 0.000781961730379207],
+        "lambda": [0.690557712088663, 0.0429816842941263, 0.00345792212606538]
+      },
+      "ke0": 0.630819160701553,
+      "ke0Resolved": 0.630819160701553,
+      "resolveIdentical": true,
+      "ke0PureRBrent": 0.630819160701553,
+      "pureRBrentIdentical": true,
+      "objectiveAtKe0": 6.35008411999454e-13,
+      "e_coef_bolus": [-1.87070438603614, 0.0105917555027426, 0.000786271787492959, 1.8593263587459],
+      "roundTrip": {
+        "peakTimeInnerOptimize": 1.59999920312585,
+        "ceAtPeakInnerOptimize": 0.0686743430403458,
+        "peakTimeExact": 1.59999049483786,
+        "ceAtPeakExact": 0.0686743430413245,
+        "peakTimeMinusTPeak": -9.5051621391562e-06
+      },
+      "ke0Exact": 0.630811950106851,
+      "ke0ExactRelativeDifference": -1.14305258158715e-05,
+      "objectiveSamples": [
+        {
+          "ke0": 0.315409580350776,
+          "predPeak": 2.26104642748719,
+          "objective": 0.436982379293574
+        },
+        {
+          "ke0": 0.504655328561242,
+          "predPeak": 1.79389724260664,
+          "objective": 0.0375961406893866
+        },
+        {
+          "ke0": 0.599278202666475,
+          "predPeak": 1.64308265918383,
+          "objective": 0.00185611552235002
+        },
+        {
+          "ke0": 0.630819160701553,
+          "predPeak": 1.59999920312585,
+          "objective": 6.35008411999454e-13
+        },
+        {
+          "ke0": 0.662360118736631,
+          "predPeak": 1.55979488045755,
+          "objective": 0.00161645163742284
+        },
+        {
+          "ke0": 0.788523950876941,
+          "predPeak": 1.42245414795986,
+          "objective": 0.0315225295766604
+        },
+        {
+          "ke0": 1.26163832140311,
+          "predPeak": 1.09803415854822,
+          "objective": 0.251969705984397
+        }
+      ]
+    },
+    {
+      "drug": "propofol",
+      "patientId": "neonate-male-3.5",
+      "patient": {
+        "weight": 3.5,
+        "height": 50,
+        "age": 0,
+        "sex": "male"
+      },
+      "tPeak": 1.6,
+      "inputs": {
+        "p_coef_bolus": [0.883773364259233, 0.24365535603397, 0.0115593368901656],
+        "lambda": [0.911008366358879, 0.0355205527566774, 0.00187116101227447]
+      },
+      "ke0": 0.724395654927914,
+      "ke0Resolved": 0.724395654927914,
+      "resolveIdentical": true,
+      "ke0PureRBrent": 0.724395654927914,
+      "pureRBrentIdentical": true,
+      "objectiveAtKe0": 2.10362431377063e-10,
+      "e_coef_bolus": [-3.43064296157149, 0.256218987527071, 0.0115892727341387, 3.16283470131028],
+      "roundTrip": {
+        "peakTimeInnerOptimize": 1.59998549612357,
+        "ceAtPeakInnerOptimize": 0.447458711567423,
+        "peakTimeExact": 1.59997238433776,
+        "ceAtPeakExact": 0.447458711579604,
+        "peakTimeMinusTPeak": -2.76156622360801e-05
+      },
+      "ke0Exact": 0.724375879093933,
+      "ke0ExactRelativeDifference": -2.72997689135263e-05,
+      "objectiveSamples": [
+        {
+          "ke0": 0.362197827463957,
+          "predPeak": 2.5471157607433,
+          "objective": 0.897028264248359
+        },
+        {
+          "ke0": 0.579516523942331,
+          "predPeak": 1.84544245278482,
+          "objective": 0.0602419976290307
+        },
+        {
+          "ke0": 0.688175872181518,
+          "predPeak": 1.65282371204408,
+          "objective": 0.00279034455400485
+        },
+        {
+          "ke0": 0.724395654927914,
+          "predPeak": 1.59998549612357,
+          "objective": 2.10362431377063e-10
+        },
+        {
+          "ke0": 0.76061543767431,
+          "predPeak": 1.55145155508525,
+          "objective": 0.00235695150366705
+        },
+        {
+          "ke0": 0.905494568659893,
+          "predPeak": 1.39083415330126,
+          "objective": 0.0437503514251993
+        },
+        {
+          "ke0": 1.44879130985583,
+          "predPeak": 1.03754527205202,
+          "objective": 0.316355320990936
+        }
+      ]
+    },
+    {
+      "drug": "remifentanil",
+      "patientId": "adult-male-70",
+      "patient": {
+        "weight": 70,
+        "height": 170,
+        "age": 50,
+        "sex": "male"
+      },
+      "tPeak": 1.6,
+      "inputs": {
+        "p_coef_bolus": [0.167035716184934, 0.0196589071248202, 0.000437972771395721],
+        "lambda": [0.838042766338828, 0.103113450682718, 0.0246936598972061]
+      },
+      "ke0": 0.571080440943592,
+      "ke0Resolved": 0.571080440943592,
+      "resolveIdentical": true,
+      "ke0PureRBrent": 0.571080440943592,
+      "pureRBrentIdentical": true,
+      "objectiveAtKe0": 2.60834433730707e-10,
+      "e_coef_bolus": [-0.35731944689572, 0.0239906181054628, 0.000457766717801911, 0.332871062072456],
+      "roundTrip": {
+        "peakTimeInnerOptimize": 1.59998384963054,
+        "ceAtPeakInnerOptimize": 0.0607905623949459,
+        "peakTimeExact": 1.599974643509,
+        "ceAtPeakExact": 0.0607905623958741,
+        "peakTimeMinusTPeak": -2.53564910002169e-05
+      },
+      "ke0Exact": 0.571063099938485,
+      "ke0ExactRelativeDifference": -3.03652583128026e-05,
+      "objectiveSamples": [
+        {
+          "ke0": 0.285540220471796,
+          "predPeak": 2.27752412168356,
+          "objective": 0.459038935463085
+        },
+        {
+          "ke0": 0.456864352754874,
+          "predPeak": 1.79565858872248,
+          "objective": 0.0382822833397147
+        },
+        {
+          "ke0": 0.542526418896412,
+          "predPeak": 1.64329200021753,
+          "objective": 0.00187419728281767
+        },
+        {
+          "ke0": 0.571080440943592,
+          "predPeak": 1.59998384963054,
+          "objective": 2.60834433730707e-10
+        },
+        {
+          "ke0": 0.599634462990772,
+          "predPeak": 1.55965149167965,
+          "objective": 0.00162800212367759
+        },
+        {
+          "ke0": 0.71385055117949,
+          "predPeak": 1.42236965210601,
+          "objective": 0.0315525404929393
+        },
+        {
+          "ke0": 1.14216088188718,
+          "predPeak": 1.10037427038395,
+          "objective": 0.249625869694369
+        }
+      ]
+    },
+    {
+      "drug": "remifentanil",
+      "patientId": "adult-female-60",
+      "patient": {
+        "weight": 60,
+        "height": 165,
+        "age": 35,
+        "sex": "female"
+      },
+      "tPeak": 1.6,
+      "inputs": {
+        "p_coef_bolus": [0.209684960812407, 0.0248324010151072, 0.000439521030666728],
+        "lambda": [1.39152184813749, 0.134136466127706, 0.0239248460974325]
+      },
+      "ke0": 0.359639302632144,
+      "ke0Resolved": 0.359639302632144,
+      "resolveIdentical": true,
+      "ke0PureRBrent": 0.359639302632144,
+      "pureRBrentIdentical": true,
+      "objectiveAtKe0": 5.55918614127873e-10,
+      "e_coef_bolus": [-0.0730809464773839, 0.039603525712543, 0.000470843700306363, 0.0330065770645345],
+      "roundTrip": {
+        "peakTimeInnerOptimize": 1.60002357792642,
+        "ceAtPeakInnerOptimize": 0.0430860027961889,
+        "peakTimeExact": 1.60001862703842,
+        "ceAtPeakExact": 0.0430860027963396,
+        "peakTimeMinusTPeak": 1.86270384225917e-05
+      },
+      "ke0Exact": 0.359647382077346,
+      "ke0ExactRelativeDifference": 2.2465412268514e-05,
+      "objectiveSamples": [
+        {
+          "ke0": 0.179819651316072,
+          "predPeak": 2.34156103487632,
+          "objective": 0.549912768446831
+        },
+        {
+          "ke0": 0.287711442105715,
+          "predPeak": 1.79851471948268,
+          "objective": 0.0394080938512889
+        },
+        {
+          "ke0": 0.341657337500537,
+          "predPeak": 1.64321621373124,
+          "objective": 0.00186764112926421
+        },
+        {
+          "ke0": 0.359639302632144,
+          "predPeak": 1.60002357792642,
+          "objective": 5.55918614127873e-10
+        },
+        {
+          "ke0": 0.377621267763751,
+          "predPeak": 1.5601345518119,
+          "objective": 0.00158925395923793
+        },
+        {
+          "ke0": 0.44954912829018,
+          "predPeak": 1.42633337618213,
+          "objective": 0.0301600962282966
+        },
+        {
+          "ke0": 0.719278605264289,
+          "predPeak": 1.12040137940733,
+          "objective": 0.230014836875052
+        }
+      ]
+    },
+    {
+      "drug": "remifentanil",
+      "patientId": "obese-male-100",
+      "patient": {
+        "weight": 100,
+        "height": 180,
+        "age": 60,
+        "sex": "male"
+      },
+      "tPeak": 1.6,
+      "inputs": {
+        "p_coef_bolus": [0.157219608262143, 0.0122356617819063, 0.00363468883392712],
+        "lambda": [0.791861592664402, 0.111517473039133, 0.0605563827545955]
+      },
+      "ke0": 0.582646948697672,
+      "ke0Resolved": 0.582646948697672,
+      "resolveIdentical": true,
+      "ke0PureRBrent": 0.582646948697672,
+      "pureRBrentIdentical": true,
+      "objectiveAtKe0": 1.18567373819467e-10,
+      "e_coef_bolus": [-0.43784470958901, 0.0151318721728448, 0.00405627011230851, 0.418656567303856],
+      "roundTrip": {
+        "peakTimeInnerOptimize": 1.59998911113533,
+        "ceAtPeakInnerOptimize": 0.057821774134063,
+        "peakTimeExact": 1.59998016278678,
+        "ceAtPeakExact": 0.0578217741349123,
+        "peakTimeMinusTPeak": -1.98372132171887e-05
+      },
+      "ke0Exact": 0.58263297718672,
+      "ke0ExactRelativeDifference": -2.3979377191663e-05,
+      "objectiveSamples": [
+        {
+          "ke0": 0.291323474348836,
+          "predPeak": 2.2636870281015,
+          "objective": 0.440480471270196
+        },
+        {
+          "ke0": 0.466117558958138,
+          "predPeak": 1.79329298706594,
+          "objective": 0.0373621788488721
+        },
+        {
+          "ke0": 0.553514601262789,
+          "predPeak": 1.64286809464422,
+          "objective": 0.00183767353842544
+        },
+        {
+          "ke0": 0.582646948697672,
+          "predPeak": 1.59998911113533,
+          "objective": 1.18567373819467e-10
+        },
+        {
+          "ke0": 0.611779296132556,
+          "predPeak": 1.56000946932524,
+          "objective": 0.00159924254364886
+        },
+        {
+          "ke0": 0.72830868587209,
+          "predPeak": 1.42363154900702,
+          "objective": 0.0311058305056632
+        },
+        {
+          "ke0": 1.16529389739534,
+          "predPeak": 1.10223356221072,
+          "objective": 0.24777142658943
+        }
+      ]
+    },
+    {
+      "drug": "remifentanil",
+      "patientId": "obese-female-120",
+      "patient": {
+        "weight": 120,
+        "height": 175,
+        "age": 45,
+        "sex": "female"
+      },
+      "tPeak": 1.6,
+      "inputs": {
+        "p_coef_bolus": [0.136068626923641, 0.0157268661160547, 0.00172650531128621],
+        "lambda": [0.858840763435228, 0.12445526485458, 0.0500596155075874]
+      },
+      "ke0": 0.561367814427213,
+      "ke0Resolved": 0.561367814427213,
+      "resolveIdentical": true,
+      "ke0PureRBrent": 0.561367814427213,
+      "pureRBrentIdentical": true,
+      "objectiveAtKe0": 1.26946659609078e-10,
+      "e_coef_bolus": [-0.256778130458438, 0.0202066900298348, 0.00189553876750188, 0.234675901661101],
+      "roundTrip": {
+        "peakTimeInnerOptimize": 1.60001126706065,
+        "ceAtPeakInnerOptimize": 0.0489137990233678,
+        "peakTimeExact": 1.60000214845364,
+        "ceAtPeakExact": 0.0489137990240973,
+        "peakTimeMinusTPeak": 2.14845364032712e-06
+      },
+      "ke0Exact": 0.561369262502988,
+      "ke0ExactRelativeDifference": 2.57954898487114e-06,
+      "objectiveSamples": [
+        {
+          "ke0": 0.280683907213606,
+          "predPeak": 2.27611066389495,
+          "objective": 0.457125629832467
+        },
+        {
+          "ke0": 0.44909425154177,
+          "predPeak": 1.79520009129676,
+          "objective": 0.0381030756422665
+        },
+        {
+          "ke0": 0.533299423705852,
+          "predPeak": 1.64320871933863,
+          "objective": 0.00186699342684776
+        },
+        {
+          "ke0": 0.561367814427213,
+          "predPeak": 1.60001126706065,
+          "objective": 1.26946659609078e-10
+        },
+        {
+          "ke0": 0.589436205148573,
+          "predPeak": 1.55978334301737,
+          "objective": 0.00161737949885816
+        },
+        {
+          "ke0": 0.701709768034016,
+          "predPeak": 1.4228613227354,
+          "objective": 0.0313781109826271
+        },
+        {
+          "ke0": 1.12273562885443,
+          "predPeak": 1.10167793456355,
+          "objective": 0.248324880900846
+        }
+      ]
+    },
+    {
+      "drug": "remifentanil",
+      "patientId": "child-male-20",
+      "patient": {
+        "weight": 20,
+        "height": 110,
+        "age": 5,
+        "sex": "male"
+      },
+      "tPeak": 1.6,
+      "inputs": {
+        "p_coef_bolus": [0.437455788577741, 0.0576595162935353, 0.00392074485333483],
+        "lambda": [1.28113893480721, 0.172304066848654, 0.0173288126660117]
+      },
+      "ke0": 0.396743558630881,
+      "ke0Resolved": 0.396743558630881,
+      "resolveIdentical": true,
+      "ke0PureRBrent": 0.396743558630881,
+      "pureRBrentIdentical": true,
+      "objectiveAtKe0": 1.2008509317774e-11,
+      "e_coef_bolus": [-0.196244542858632, 0.101925207108511, 0.00409981499701596, 0.0902195207531051],
+      "roundTrip": {
+        "peakTimeInnerOptimize": 1.59999653467039,
+        "ceAtPeakInnerOptimize": 0.103906689200474,
+        "peakTimeExact": 1.59998977015215,
+        "ceAtPeakExact": 0.103906689201198,
+        "peakTimeMinusTPeak": -1.0229847851928e-05
+      },
+      "ke0Exact": 0.396738632475078,
+      "ke0ExactRelativeDifference": -1.24164733012024e-05,
+      "objectiveSamples": [
+        {
+          "ke0": 0.198371779315441,
+          "predPeak": 2.31037085091941,
+          "objective": 0.504626745835972
+        },
+        {
+          "ke0": 0.317394846904705,
+          "predPeak": 1.7957249864251,
+          "objective": 0.0383082703111053
+        },
+        {
+          "ke0": 0.376906380699337,
+          "predPeak": 1.64284754007601,
+          "objective": 0.00183591169056563
+        },
+        {
+          "ke0": 0.396743558630881,
+          "predPeak": 1.59999653467039,
+          "objective": 1.2008509317774e-11
+        },
+        {
+          "ke0": 0.416580736562425,
+          "predPeak": 1.56030738847889,
+          "objective": 0.001575503409366
+        },
+        {
+          "ke0": 0.495929448288601,
+          "predPeak": 1.42647626458564,
+          "objective": 0.0301104867520278
+        },
+        {
+          "ke0": 0.793487117261762,
+          "predPeak": 1.11763818709696,
+          "objective": 0.232672918547108
+        }
+      ]
+    },
+    {
+      "drug": "remifentanil",
+      "patientId": "elderly-female-85",
+      "patient": {
+        "weight": 85,
+        "height": 175,
+        "age": 80,
+        "sex": "female"
+      },
+      "tPeak": 1.6,
+      "inputs": {
+        "p_coef_bolus": [0.215758415034447, 0.0199391039362342, 0.000232435271490349],
+        "lambda": [0.853195043241262, 0.0973472963042479, 0.0304157847544928]
+      },
+      "ke0": 0.538456733911737,
+      "ke0Resolved": 0.538456733911737,
+      "resolveIdentical": true,
+      "ke0PureRBrent": 0.538456733911737,
+      "pureRBrentIdentical": true,
+      "objectiveAtKe0": 7.83660294514787e-11,
+      "e_coef_bolus": [-0.369121165202, 0.0243394130056787, 0.000246350884392675, 0.344535401311929],
+      "roundTrip": {
+        "peakTimeInnerOptimize": 1.60000885245895,
+        "ceAtPeakInnerOptimize": 0.072379007570044,
+        "peakTimeExact": 1.59999988224465,
+        "ceAtPeakExact": 0.0723790075710985,
+        "peakTimeMinusTPeak": -1.17755351247695e-07
+      },
+      "ke0Exact": 0.538456655812185,
+      "ke0ExactRelativeDifference": -1.45043320857971e-07,
+      "objectiveSamples": [
+        {
+          "ke0": 0.269228366955869,
+          "predPeak": 2.25133471300148,
+          "objective": 0.42423690836072
+        },
+        {
+          "ke0": 0.43076538712939,
+          "predPeak": 1.78964463037263,
+          "objective": 0.035965085829173
+        },
+        {
+          "ke0": 0.511533897216151,
+          "predPeak": 1.64208599602592,
+          "objective": 0.00177123106149354
+        },
+        {
+          "ke0": 0.538456733911737,
+          "predPeak": 1.60000885245895,
+          "objective": 7.83660294514787e-11
+        },
+        {
+          "ke0": 0.565379570607324,
+          "predPeak": 1.56076805280818,
+          "objective": 0.00153914568046207
+        },
+        {
+          "ke0": 0.673070917389672,
+          "predPeak": 1.42682300015917,
+          "objective": 0.0299902732738698
+        },
+        {
+          "ke0": 1.07691346782347,
+          "predPeak": 1.11032053471431,
+          "objective": 0.239785978722478
+        }
+      ]
+    },
+    {
+      "drug": "remifentanil",
+      "patientId": "young-female-45",
+      "patient": {
+        "weight": 45,
+        "height": 160,
+        "age": 25,
+        "sex": "female"
+      },
+      "tPeak": 1.6,
+      "inputs": {
+        "p_coef_bolus": [0.241887147197028, 0.0294884925917797, 0.000661780710684172],
+        "lambda": [1.5843431505189, 0.148977436708993, 0.0216722196991006]
+      },
+      "ke0": 0.32599386541982,
+      "ke0Resolved": 0.32599386541982,
+      "resolveIdentical": true,
+      "ke0PureRBrent": 0.32599386541982,
+      "pureRBrentIdentical": true,
+      "objectiveAtKe0": 6.60669171780026e-11,
+      "e_coef_bolus": [-0.0626644184121922, 0.0543060763083287, 0.000708909323309172, 0.00764943278055434],
+      "roundTrip": {
+        "peakTimeInnerOptimize": 1.60000812815583,
+        "ceAtPeakInnerOptimize": 0.043046747048295,
+        "peakTimeExact": 1.60000886890339,
+        "ceAtPeakExact": 0.043046747048298,
+        "peakTimeMinusTPeak": 8.86890339124591e-06
+      },
+      "ke0Exact": 0.325997204805644,
+      "ke0ExactRelativeDifference": 1.02437075619906e-05,
+      "objectiveSamples": [
+        {
+          "ke0": 0.16299693270991,
+          "predPeak": 2.43220889177487,
+          "objective": 0.692571639592519
+        },
+        {
+          "ke0": 0.260795092335856,
+          "predPeak": 1.81061487003665,
+          "objective": 0.044358623480557
+        },
+        {
+          "ke0": 0.309694172148829,
+          "predPeak": 1.64525197110764,
+          "objective": 0.00204774088912663
+        },
+        {
+          "ke0": 0.32599386541982,
+          "predPeak": 1.60000812815583,
+          "objective": 6.60669171780026e-11
+        },
+        {
+          "ke0": 0.342293558690811,
+          "predPeak": 1.55848126605586,
+          "objective": 0.00172380526832429
+        },
+        {
+          "ke0": 0.407492331774775,
+          "predPeak": 1.4208028823238,
+          "objective": 0.0321116069834578
+        },
+        {
+          "ke0": 0.651987730839639,
+          "predPeak": 1.11327415793594,
+          "objective": 0.236902045331701
+        }
+      ]
+    },
+    {
+      "drug": "remifentanil",
+      "patientId": "neonate-male-3.5",
+      "patient": {
+        "weight": 3.5,
+        "height": 50,
+        "age": 0,
+        "sex": "male"
+      },
+      "tPeak": 1.6,
+      "inputs": {
+        "p_coef_bolus": [2.21340145909336, 0.371403524206216, 0.0410588499915822],
+        "lambda": [1.79608996927269, 0.242346572263854, 0.0170547827857456]
+      },
+      "ke0": 0.342846211228476,
+      "ke0Resolved": 0.342846211228476,
+      "resolveIdentical": true,
+      "ke0PureRBrent": 0.342846211228476,
+      "pureRBrentIdentical": true,
+      "objectiveAtKe0": 6.53167254419059e-10,
+      "e_coef_bolus": [-0.522181017449554, 1.26701242335636, 0.0432082305673269, -0.788039636474129],
+      "roundTrip": {
+        "peakTimeInnerOptimize": 1.60002555713705,
+        "ceAtPeakInnerOptimize": 0.416999298746685,
+        "peakTimeExact": 1.60003284869161,
+        "ceAtPeakExact": 0.416999298749294,
+        "peakTimeMinusTPeak": 3.28486916110204e-05
+      },
+      "ke0Exact": 0.342857837637687,
+      "ke0ExactRelativeDifference": 3.39114414282889e-05,
+      "objectiveSamples": [
+        {
+          "ke0": 0.171423105614238,
+          "predPeak": 2.5909667909209,
+          "objective": 0.982015180708074
+        },
+        {
+          "ke0": 0.274276968982781,
+          "predPeak": 1.8404353597655,
+          "objective": 0.0578091622255653
+        },
+        {
+          "ke0": 0.325703900667052,
+          "predPeak": 1.65089567546947,
+          "objective": 0.00259036978146439
+        },
+        {
+          "ke0": 0.342846211228476,
+          "predPeak": 1.60002555713705,
+          "objective": 6.53167254419059e-10
+        },
+        {
+          "ke0": 0.359988521789899,
+          "predPeak": 1.55375510612035,
+          "objective": 0.00213859020993976
+        },
+        {
+          "ke0": 0.428557764035595,
+          "predPeak": 1.40294576308539,
+          "objective": 0.0388303722859974
+        },
+        {
+          "ke0": 0.685692422456951,
+          "predPeak": 1.07927139170536,
+          "objective": 0.271158283496474
+        }
+      ]
+    }
+  ]
+}
