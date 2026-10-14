@@ -26,6 +26,18 @@
 // be as right as its record.  Ce of the truth is the solid line on the
 // chart; Ce of the belief is the dashed one.
 //
+// THE PUMP DRIVER
+// ===============
+// The hardware is behind one object, the driver (js/driver.js): infuse(time,
+// rate) commands a rate and reads back what the pump has done (the volume
+// infused, the rate running, the syringe left, its state and alarms),
+// loadSyringe() loads a new one, horizon() says when the pump will next
+// change state by itself.  FauxPump never integrates the commanded rate: the
+// truth is advanced with the mass the driver says was delivered, the record
+// gets a rate change only when a reading shows it running, and an alarm the
+// pump reports (the syringe empty) stops the controller.  The page runs the
+// SimulatedPump driver; a real pump plugs in by passing its own driver.
+//
 // TIME
 // ====
 // Everything is event-driven.  tick() (every 250 ms of real time in the app,
@@ -55,6 +67,7 @@
 import { resolveModel, advance, bolus, cp, ce, emptyState } from "./pk.js";
 import { formatRfc3339, parseRfc3339, TCI_API } from "./tci.js";
 import { makeTransport } from "./transport.js";
+import { SimulatedPump } from "./driver.js";
 
 /** The pump's defaults: the stanpumpR simulator's base pump (fixtures README). */
 export const PUMP_DEFAULTS = Object.freeze({
@@ -235,6 +248,16 @@ export class FauxPump {
     this.syringeRemaining = o.syringeVolume;
     this._recomputeConcentrations();
 
+    // The pump itself, behind the driver interface (js/driver.js).
+    this.driver = options.driver || new SimulatedPump({
+      syringeVolume: o.syringeVolume,
+      concentration: this.trueConcBase,
+      massUnits: this.massUnits,
+    });
+    this._commanded = null; // { value, source }: a rate commanded that no reading has yet shown running
+    this._lastReading = null;
+    this._raisedAlarms = new Set(); // "kind@at" of the driver alarms already raised once
+
     // The pump's limits and timing.
     this.rateUnits = "mL/hr";
     this.limits = { ...o.limits };
@@ -271,7 +294,7 @@ export class FauxPump {
     this.caseStart = null; // s
     this.t = null; // s, the time the physics has been advanced to
     this.state = "standby"; // standby | running | paused | alarm
-    this.alarmKind = null; // null | "fallbackExpired" | "syringeEmpty"
+    this.alarmKind = null; // null | "fallbackExpired" | a kind the driver reports ("syringeEmpty", ...)
     this.alarms = []; // { time, message }
     this.notes = []; // { time, message }: the pump's own log for the page
     this.rate = 0; // mL/hr running
@@ -429,7 +452,19 @@ export class FauxPump {
   // changes (acknowledgement time = request time + actualLatency for a
   // command).  The value is rounded to 15 significant digits first, as the
   // JSON carries it, so the record and the pump agree with the wire.
+  // Command the driver to run `value` mL/hr from `time` (the physics has been
+  // advanced to `time`), and record whatever the reading shows running.  A
+  // pump that acknowledges later is recorded when a later reading shows the
+  // rate running, at that reading's acknowledgedAt.
   _setRate(time, value, source) {
+    this._commanded = { value: j15(value), source };
+    const reading = this.driver.infuse(time, value);
+    this._absorbTotals(reading);
+    this._absorbEvents(reading, time);
+  }
+
+  // Write a rate change into the history and the record at `time`.
+  _recordRate(time, value, source) {
     const v = j15(value);
     if (v === this.rate) return false;
     const stamp = fmt(time);
@@ -455,22 +490,75 @@ export class FauxPump {
   }
 
   // -------------------------------------------------------------------------
-  // The physics: the seven-amplitude recurrence at the rate actually running
+  // The physics: the seven-amplitude recurrence, the truth at the mass the
+  // pump delivered, the belief at the rate the controller commanded
 
   _advancePhysics(to) {
     const dt = to - this.t;
     if (dt <= 0) return;
     const dtMin = dt / 60;
-    this.truth = advance(this.truth, dtMin, this._baseRate(this.rate, this.trueConcBase), this.model);
+    const reading = this.driver.infuse(to, null);
+    const massDelivered = this._absorbTotals(reading);
+    this.truth = advance(this.truth, dtMin, massDelivered / dtMin, this.model);
     this.belief = advance(this.belief, dtMin, this._baseRate(this.rate, this.toldConcBase), this.model);
-    if (this.rate > 0) {
-      const ml = this.rate * dt / 3600;
-      this.volumeInfused += ml;
-      this.trueMassInfused += ml * this.trueConcBase;
-      this.syringeRemaining = Math.max(0, this.syringeRemaining - ml);
-    }
     this.t = to;
     if (to - this.lastSampleAt >= 1 - EPS) this._sample(false);
+    this._absorbEvents(reading, to);
+  }
+
+  // A driver event fell due at the physics time: read the pump without advancing.
+  _pollDriver(now) {
+    const reading = this.driver.infuse(now, null);
+    this._absorbTotals(reading);
+    this._absorbEvents(reading, now);
+  }
+
+  // The reading's totalisers: the volume and mass through the pump and the
+  // syringe left.  Returns the mass delivered since the previous reading, in
+  // base units (through the true concentration when the pump has no drug
+  // totaliser).
+  _absorbTotals(reading) {
+    this._lastReading = reading;
+    const prevVolume = this.volumeInfused;
+    const prevMass = this.trueMassInfused;
+    if (isFiniteNumber(reading.volumeInfused)) this.volumeInfused = reading.volumeInfused;
+    if (isFiniteNumber(reading.massInfused)) this.trueMassInfused = reading.massInfused;
+    else this.trueMassInfused = prevMass + (this.volumeInfused - prevVolume) * this.trueConcBase;
+    if (isFiniteNumber(reading.syringeRemaining)) this.syringeRemaining = reading.syringeRemaining;
+    return this.trueMassInfused - prevMass;
+  }
+
+  // The reading's events: an alarm the pump is in that the controller has
+  // not acted on stops the controller (the rate 0 recorded at the alarm's
+  // own time); a rate running that differs from the record is recorded, as
+  // the command it answers or, unasked, as the pump's own doing.
+  _absorbEvents(reading, now) {
+    for (const a of reading.alarms || []) {
+      if (!a || typeof a.kind !== "string") continue;
+      if (this.state === "alarm" && this.alarmKind === a.kind) continue;
+      const key = `${a.kind}@${isFiniteNumber(a.at) ? a.at : "?"}`;
+      const first = !this._raisedAlarms.has(key);
+      this._raisedAlarms.add(key);
+      const at = first && isFiniteNumber(a.at) ? Math.min(Math.max(a.at, this.caseStart), now) : now;
+      if (this.rate !== 0) this._recordRate(at, 0, "pump");
+      this._commanded = null;
+      this.segment = null;
+      this._alarm(at, a.kind, first ? (a.message || a.kind) : `${a.message || a.kind} (still)`);
+    }
+    const running = j15(isFiniteNumber(reading.rate) ? reading.rate : this.rate);
+    if (running !== this.rate) {
+      const at = isFiniteNumber(reading.acknowledgedAt) ? Math.min(Math.max(reading.acknowledgedAt, this.caseStart), now) : now;
+      const c = this._commanded;
+      if (c && c.value === running) {
+        this._recordRate(at, running, c.source);
+        this._commanded = null;
+      } else {
+        this._recordRate(at, running, "pump");
+        this._note(at, `the pump reports ${sig(running, 6)} mL/hr running, which the controller did not command`);
+      }
+    } else if (this._commanded && this._commanded.value === running) {
+      this._commanded = null;
+    }
   }
 
   _sample(force) {
@@ -559,9 +647,8 @@ export class FauxPump {
       if (s.phase === "hold") consider(s.holdUntil, "holdEnd", 2);
       else if (s.phase === "fallback") consider(s.fallbackUntil, "fallbackEnd", 3);
     }
-    if (this.rate > 0 && this.syringeRemaining > 0 && Number.isFinite(this.syringeRemaining)) {
-      consider(this.t + this.syringeRemaining * 3600 / this.rate, "syringeEmpty", 4);
-    }
+    const h = this.driver.horizon(this.t);
+    if (isFiniteNumber(h)) consider(Math.max(h, this.t), "driver", 4);
     return best;
   }
 
@@ -571,7 +658,7 @@ export class FauxPump {
       case "request": this._sendRequest(ev.time); break;
       case "holdEnd": this._holdEnded(ev.time); break;
       case "fallbackEnd": this._fallbackEnded(ev.time); break;
-      case "syringeEmpty": this._syringeEmptied(ev.time); break;
+      case "driver": this._pollDriver(ev.time); break;
       default: break;
     }
   }
@@ -768,7 +855,7 @@ export class FauxPump {
       this.stoppedForTarget = false;
       this._setRate(at, body.rate.value, "tci");
       this.segment = {
-        rate: this.rate,
+        rate: j15(body.rate.value), // the commanded rate; this.rate is what the pump has acknowledged
         startsAt: at,
         holdUntil: at + body.segment.holdSeconds,
         fallbackRate: body.fallback.rate,
@@ -815,13 +902,6 @@ export class FauxPump {
     this._setRate(at, 0, "pump");
     this.segment = null;
     if (!planned) this._alarm(at, "fallbackExpired", "no command accepted by the end of the fallback segment: the pump stopped");
-  }
-
-  _syringeEmptied(at) {
-    this.syringeRemaining = 0;
-    this._setRate(at, 0, "pump");
-    this.segment = null;
-    this._alarm(at, "syringeEmpty", "syringe empty: the pump stopped");
   }
 
   _alarm(at, kind, message) {
@@ -1050,7 +1130,8 @@ export class FauxPump {
       this.trueConcentration = concentrationTrue;
       this._recomputeConcentrations();
       this.syringeVolume = volume;
-      this.syringeRemaining = volume;
+      const reading = this.driver.loadSyringe(now, { volume, concentration: this.trueConcBase, units: this.massUnits });
+      this._absorbTotals(reading);
       if (this.started) {
         this._pushEvent({ time: fmt(now), infusate: { concentration: concentrationTold, units: this.syringe.units }, source: "manual" });
         this._note(now, `syringe changed: controller told ${concentrationTold} ${this.syringe.units}, really ${concentrationTrue}`);
@@ -1247,6 +1328,13 @@ export class FauxPump {
       volumeInfused: this.volumeInfused,
       trueMassInfused: this.trueMassInfused,
       syringeRemaining: this.syringeRemaining,
+      pump: this._lastReading ? {
+        state: this._lastReading.state,
+        rate: this._lastReading.rate,
+        acknowledgedAt: this._lastReading.acknowledgedAt === null ? null : this._lastReading.acknowledgedAt * 1000,
+        commanded: this._lastReading.commanded ? { ...this._lastReading.commanded } : null,
+        alarms: (this._lastReading.alarms || []).map((a) => ({ ...a })),
+      } : null,
       timeToEmpty: this.rate > 0 ? this.syringeRemaining * 3600 / this.rate : null,
       truth: { cp: cp(this.truth), ce: ce(this.truth), p: [...this.truth.p], e: [...this.truth.e] },
       predicted: { cp: cp(this.belief), ce: ce(this.belief), p: [...this.belief.p], e: [...this.belief.e] },

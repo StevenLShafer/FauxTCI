@@ -56,7 +56,7 @@ import { md5 } from "./md5.js";
 // here changes meaning: a token, a drug or a bound may only be added.
 
 /** This port's own version, reported in `server.version`. */
-export const FAUXTCI_VERSION = "0.2.0";
+export const FAUXTCI_VERSION = "0.3.0";
 
 const RATE_UNITS = Object.freeze(["mL/hr", "mg/hr", "mg/min", "mcg/hr", "mcg/min",
   "mg/kg/hr", "mg/kg/min", "mcg/kg/hr", "mcg/kg/min"]);
