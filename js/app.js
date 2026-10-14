@@ -451,6 +451,7 @@ function startCase(event) {
   let pump;
   try {
     pump = new FauxPump({
+      driver: pickDriver(settings),
       drug: settings.drug,
       patient: settings.patient,
       syringe: settings.syringe,
@@ -488,6 +489,15 @@ function startCase(event) {
   // the top of the window so the running pump is what the user sees.
   const screen = el.pumpScreen.getBoundingClientRect();
   if (screen.bottom > window.innerHeight || screen.top < 0) el.pumpScreen.scrollIntoView({ block: "start" });
+}
+
+// A real pump's driver, when the page was given one: window.FauxTCI.driver,
+// a PumpDriver instance (js/driver.js) or a function of the case settings
+// that returns one.  Without it FauxPump builds the SimulatedPump.
+function pickDriver(settings) {
+  const hook = typeof window !== "undefined" && window.FauxTCI ? window.FauxTCI.driver : null;
+  if (!hook) return undefined;
+  return typeof hook === "function" ? hook(settings) : hook;
 }
 
 function stopCase() {
@@ -613,7 +623,12 @@ function updateFace(snap) {
   const massUnits = snap.config.massUnits;
   const perKg = massUnits === "mg" ? base * 1000 / weight : base / weight;
   const massText = massUnits === "mg" ? `${sig(base * 60, 4)} mg/hr` : `${sig(base, 4)} mcg/min`;
-  el.massRate.textContent = `${massText} ${MIDDOT} ${sig(perKg, 3)} mcg/kg/min`;
+  // The pump's own word when it differs from the controller's: a command it
+  // has not yet acknowledged, or a state other than running.
+  let pumpText = "";
+  if (snap.pump && snap.pump.commanded) pumpText = ` ${MIDDOT} ${snap.pump.commanded.rate.toFixed(decimals)} commanded`;
+  else if (snap.pump && snap.pump.state !== "running") pumpText = ` ${MIDDOT} pump ${snap.pump.state}`;
+  el.massRate.textContent = `${massText} ${MIDDOT} ${sig(perKg, 3)} mcg/kg/min${pumpText}`;
 
   const lampState = snap.state === "running" && snap.rate === 0 && snap.phaseCode !== "loading" ? "running" : snap.state;
   el.lamp.dataset.state = snap.started ? lampState : "standby";
@@ -626,12 +641,23 @@ function updateFace(snap) {
   const planWord = snap.plan === "effectSite" ? "effect-site plan" : snap.plan === "plasma" ? "plasma hold" : snap.plan === "off" ? "plan: off" : "";
   el.plan.textContent = snap.started && snap.plan ? `(${planWord})` : "";
 
+  // The alarm line: the alarm with the way out while the case runs (the
+  // message alone once it has ended), or else a notice the pump reports.
   let alarmText = "";
   if (snap.state === "alarm" && snap.alarms.length) {
-    alarmText = `ALARM: ${snap.alarms[snap.alarms.length - 1].message}. Set a target or press Resume to restart.`;
+    const kind = snap.alarmKind;
+    const hint = !app.running ? ""
+      : kind === "syringeEmpty" ? " Change the syringe to continue."
+        : kind === "driverFault" ? " Check the pump link, then set a target to retry."
+          : kind === "fallbackExpired" ? " Set a target or press Resume to restart."
+            : " Clear the condition on the pump, then set a target or press Resume.";
+    alarmText = `ALARM: ${snap.alarms[snap.alarms.length - 1].message}.${hint}`;
+  } else if (snap.pump && snap.pump.notices && snap.pump.notices.length) {
+    alarmText = `Pump: ${snap.pump.notices[snap.pump.notices.length - 1].message}`;
   }
   if (alarmText !== app.lastAlarm) {
     el.alarm.textContent = alarmText;
+    el.alarm.classList.toggle("is-notice", alarmText.startsWith("Pump: "));
     app.lastAlarm = alarmText;
   }
 
@@ -782,7 +808,7 @@ function updateWire(snap) {
 
 const OUTCOME_WORDS = Object.freeze({
   applied: "applied", pending: "pending", dropped: "dropped", "late-discarded": "late",
-  superseded: "superseded", error: "error", "no-response": "no response",
+  superseded: "superseded", error: "error", "no-response": "no response", refused: "refused",
 });
 
 const caseTime = (ms) => clockText((ms - app.caseStartMs) / 1000, true);
@@ -844,7 +870,7 @@ function patchCard(li, x) {
   const status = li.querySelector(".xcard-status");
   status.textContent = x.status === null ? "" : String(x.status);
   status.classList.toggle("is-error", x.status !== null && x.status !== 200);
-  const isError = x.outcome === "error" || x.outcome === "no-response" || (x.status !== null && x.status !== 200);
+  const isError = x.outcome === "error" || x.outcome === "no-response" || x.outcome === "refused" || (x.status !== null && x.status !== 200);
   const summary = li.querySelector(".xcard-summary");
   summary.textContent = x.summary;
   summary.classList.toggle("is-error", isError);

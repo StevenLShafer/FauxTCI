@@ -264,3 +264,117 @@ test("the page runs a propofol case to maintenance in Chromium", { skip: playwri
     await new Promise((resolve) => server.close(resolve));
   }
 });
+
+test("the page's alarms and the window.FauxTCI.driver hook in Chromium: the syringe runs out, a real-pump driver's occlusion stops the case", { skip: playwright ? false : "playwright is not installed (npm install -g playwright; npx playwright install chromium)", timeout: 110000 }, async () => {
+  const { server, url } = await serve(ROOT);
+  let browser = null;
+  try {
+    browser = await playwright.chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1400, height: 1200 } });
+    const pageErrors = [];
+    const consoleErrors = [];
+    page.on("console", (msg) => { if (msg.type() === "error") consoleErrors.push(msg.text()); });
+    page.on("pageerror", (err) => pageErrors.push(err.message));
+    await page.goto(url + "index.html", { waitUntil: "load" });
+    await page.waitForFunction(() => document.getElementById("concentration").options.length > 0);
+    const text = async (sel) => ((await page.textContent(sel)) || "").trim();
+    const lastRecordRow = () => page.$$eval("#record-body tr", (rows) => {
+      const r = rows[rows.length - 1];
+      return r ? Array.from(r.querySelectorAll("td")).map((td) => td.textContent.trim()) : null;
+    });
+
+    // A 5 mL syringe at 60x: the pump empties during the loading infusion,
+    // stops and alarms; the alarm line says what to do; Resume brings the
+    // alarm back (the pump will not run without a syringe); Change syringe
+    // clears it and the case runs on.
+    await page.selectOption("#drug", "propofol");
+    await page.selectOption("#multiplier", "60");
+    await page.fill("#syringe-volume", "5");
+    await page.fill("#target-value", "3");
+    await page.click("#start");
+    await page.waitForFunction(() => /syringe empty/.test(document.getElementById("alarm").textContent), null, { timeout: 30000 });
+    assert.match(await text("#alarm"), /Change the syringe to continue\./, "the alarm line names the way out");
+    assert.equal(await text("#phase"), "ALARM");
+    assert.equal(Number(await text("#rate-value")), 0);
+    assert.match(await text("#mass-rate"), /pump stopped/, "the face shows the pump's own state");
+    assert.match(await text("#syringe-remaining"), /^0\.0 of 5 mL/);
+    const stopRow = await lastRecordRow();
+    assert.ok(stopRow && stopRow[1] === "rate change" && stopRow[2] === "0" && stopRow[4] === "pump", `the stop is in the record from the pump: ${JSON.stringify(stopRow)}`);
+    await page.click("#pause-resume"); // Resume: the pump still has no syringe
+    await page.waitForFunction(() => /\(still\)/.test(document.getElementById("alarm").textContent), null, { timeout: 10000 });
+    assert.match(await text("#alarm"), /Change the syringe to continue\./);
+    await page.fill("#syringe-told", "10");
+    await page.fill("#syringe-true", "10");
+    await page.click("#change-syringe");
+    await page.waitForFunction(() => document.getElementById("alarm").textContent.trim() === "" && Number(document.getElementById("rate-value").textContent) > 0, null, { timeout: 30000 });
+    assert.notEqual(await text("#phase"), "ALARM");
+    await page.click("#stop-case");
+    await page.waitForFunction(() => document.getElementById("start").getBoundingClientRect().height > 0, null, { timeout: 20000 });
+
+    // A driver handed to the page: a pump whose line occludes 20 s into the
+    // case, which the controller cannot foresee.  The hook is a function of
+    // the settings, so it can size the syringe as the page did.
+    await page.evaluate(async () => {
+      const { SimulatedPump } = await import("./js/driver.js");
+      class OccludingPump extends SimulatedPump {
+        constructor(o) { super(o); this.occludeAt = null; this.loads = 0; }
+        loadSyringe(time, syringe) {
+          this.loads += 1;
+          if (this.occludeAt === null) {
+            this.occludeAt = time + 120;
+            this.notices.push({ kind: "lowBattery", message: "battery low", at: time });
+          }
+          return super.loadSyringe(time, syringe);
+        }
+        _advance(to) {
+          if (this.occludeAt !== null && this.state === "running" && to >= this.occludeAt) {
+            super._advance(this.occludeAt);
+            this.rate = 0;
+            this.state = "stopped";
+            this.alarms.push({ kind: "occlusion", message: "line occluded: the pump stopped", at: this.occludeAt });
+            this.occludeAt = null;
+          }
+          super._advance(to);
+        }
+      }
+      window.FauxTCI = {
+        driver: (settings) => {
+          window.FauxTCI.built = { syringeVolume: settings.syringeVolume, drug: settings.drug };
+          window.FauxTCI.instance = new OccludingPump({ syringeVolume: settings.syringeVolume, concentration: 10, massUnits: "mg" });
+          return window.FauxTCI.instance;
+        },
+      };
+    });
+    await page.fill("#syringe-volume", "50");
+    await page.fill("#target-value", "3");
+    await page.click("#start");
+    // The pump's notice shows on the alarm line, as a notice, until the alarm takes it.
+    await page.waitForFunction(() => /battery low/.test(document.getElementById("alarm").textContent), null, { timeout: 10000 });
+    assert.equal(await text("#alarm"), "Pump: battery low");
+    assert.ok(await page.evaluate(() => document.getElementById("alarm").classList.contains("is-notice")), "a notice is not styled as an alarm");
+    await page.waitForFunction(() => /occluded/.test(document.getElementById("alarm").textContent), null, { timeout: 30000 });
+    const built = await page.evaluate(() => window.FauxTCI.built);
+    assert.deepEqual(built, { syringeVolume: 50, drug: "propofol" }, "the hook was called with the case settings");
+    assert.equal(await page.evaluate(() => window.FauxTCI.instance.loads), 1, "the driver was told the initial syringe");
+    assert.match(await text("#alarm"), /Clear the condition on the pump, then set a target or press Resume\./);
+    assert.ok(!(await page.evaluate(() => document.getElementById("alarm").classList.contains("is-notice"))));
+    assert.equal(await text("#phase"), "ALARM");
+    assert.equal(Number(await text("#rate-value")), 0);
+    const occlusionRow = await lastRecordRow();
+    assert.ok(occlusionRow && occlusionRow[1] === "rate change" && occlusionRow[2] === "0" && occlusionRow[4] === "pump", `the pump's stop is in the record: ${JSON.stringify(occlusionRow)}`);
+    const sim = await page.evaluate(() => window.FauxTCI.instance.volumeInfused);
+    assert.ok(sim > 0 && sim < 20, `the driver's own totaliser ran the case (${sim} mL)`);
+    await mkdir(RESULTS, { recursive: true });
+    await page.screenshot({ path: path.join(RESULTS, "smoke-driver.png"), fullPage: true });
+    await page.click("#stop-case");
+    await page.waitForFunction(() => document.getElementById("start").getBoundingClientRect().height > 0, null, { timeout: 20000 });
+    assert.equal(await text("#phase"), "ALARM", "the pump's condition stands after Stop");
+    assert.equal(await text("#alarm"), "ALARM: line occluded: the pump stopped.", "once the case has ended the hint, whose controls are disabled, is dropped");
+
+    assert.deepEqual(pageErrors, [], "no page errors");
+    assert.deepEqual(consoleErrors, [], "no console errors");
+  } finally {
+    if (browser) await browser.close();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});

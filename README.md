@@ -161,6 +161,122 @@ order.
   request bodies carry the simulated clock, which is why they stay
   consistent at any speed.
 
+## Where a real pump plugs in: the pump driver
+
+Everything the controller knows about the hardware comes through one object,
+the pump driver (`js/driver.js`). It is STANPUMP's `infuse()` loop made
+explicit: every interval, and on every local event, the controller tells the
+pump the rate and reads back what the pump has actually done. The interface
+has three methods, each called with the controller's clock time in seconds
+since the epoch:
+
+| Method | What it does |
+|---|---|
+| `infuse(time, rate)` | Run `rate` mL/hr from `time`; `rate` null changes nothing and just reads the pump. Returns a reading. |
+| `loadSyringe(time, { volume, concentration, units, drug })` | A new syringe: `volume` in mL, `concentration` what is really in it, in the drug's base mass unit per mL, `units` that unit (`"mg"` or `"mcg"`), `drug` the drug's name. Called once at `start()` for the syringe the case begins with and again on every change. Returns a reading. |
+| `horizon(time)` | When the pump will next change state by itself (a syringe about to run out, a command about to take effect): a time strictly later than `time`, or null if it cannot predict. Optional; a time at or before `time` is ignored. |
+
+The calling convention: the three methods are **synchronous**. Each returns
+at once, from the driver's own cached status, and never throws. A real
+driver talks to its pump in the background (a serial port, Bluetooth, a
+socket), keeps the last status it received, issues each command when
+`infuse()` asks for it, and answers `infuse()` from what it has. Within a
+case the controller never calls the driver with a `time` earlier than a
+previous call's; across cases it may, since the page's clock restarts at
+each Start (see the hook below). A method that throws, or returns a
+Promise or anything but a reading, is a **driver fault**: the controller
+raises the alarm `driverFault`, stops asking the server, records nothing
+it has not seen, and keeps its own clock running; the first reading that
+arrives normally clears the fault (the alarm stays, as every alarm does,
+until the user clears it). `horizon()` is the exception: a throw, or
+anything but a number, reads as null.
+
+A reading is the pump's own account of itself as of `time`:
+
+```
+time              s, the instant the reading describes (the time asked)
+rate              mL/hr actually running, 0 when stopped
+acknowledgedAt    s, when the rate running took effect
+commanded         { rate, at } a command not yet running, or null
+volumeInfused     mL, the pump's own volume totaliser (see below)
+massInfused       the drug totaliser in massUnits, or null if the pump has none
+massUnits         "mg" or "mcg" (converted to the drug's unit), or null for the drug's unit
+syringeRemaining  mL left, or null if the pump cannot tell (then derived)
+state             "running" | "stopped" | "paused"
+alarms            [{ kind, message, at }]: conditions that stopped the pump
+notices           [{ kind, message, at }]: conditions that did not (optional)
+```
+
+What the controller does with it:
+
+* **The truth follows the totaliser.** The controller never integrates the
+  commanded rate itself: the true patient model is advanced with the mass
+  the reading says was delivered (the drug totaliser, converted by
+  `massUnits`; or the volume at the syringe's true concentration when there
+  is none). The totaliser need not be 0 at the first call and may reset:
+  the controller counts from the first reading and takes a decrease as a
+  reset, so the request's `pump.volumeInfused` is always the volume since
+  the case started. A pump that cannot tell its syringe volume has it
+  derived: the loaded volume less the volume totalised since the load.
+* **The record follows the acknowledgement.** A rate change goes into the
+  delivery record only when a reading shows it running, at the reading's
+  `acknowledgedAt` (a pump that acknowledges late is recorded late, which is
+  the truth the server needs), never earlier than an event already
+  recorded. A running rate within the pump's rate resolution of the command
+  answers it and is recorded with the command's source and the pump's own
+  value; a rate the controller did not command is recorded with source
+  `pump`.
+* **An alarm stops the pump, for real.** An alarm means the pump has
+  stopped, or must: on the first reading that shows one the controller
+  commands rate 0, records the stop (at the alarm's own time when the pump
+  had stopped itself, at the stop command when it was still running), drops
+  its command segment and raises the alarm on the face. Two alarms at once are raised once each. The pump must keep
+  reporting the alarm until the condition is cleared on the pump; if the
+  user clears it first it comes back at the next reading, so the controller
+  cannot run a pump that will not. `syringeEmpty` and `occlusion` are the
+  kinds the API's `pump.state` names, and the controller's own state for
+  them (it does not ask the server while in alarm; once the user clears the
+  alarm, a pump still stopped is reported as `standby`); any other kind
+  (`doorOpen`, whatever the pump calls it) is raised as it comes. A
+  condition that does not stop the pump (low battery, near end of
+  infusion) belongs in `notices`: shown on the face while the pump reports
+  it, noted once in the controller's log, never acted on.
+* **The pump's state is honoured.** A pump paused from its own panel pauses
+  the controller (the plan is noted, not run, and the request says
+  `paused`); when the pump runs again the controller resumes and asks at
+  once. A pump that is `stopped` with no alarm is reported as `standby`.
+  The face shows the pump's own word next to the rate when it differs from
+  the controller's: a command not yet acknowledged, or a state other than
+  running.
+
+`SimulatedPump`, in the same file, is the pump FauxTCI runs: it delivers
+exactly the commanded rate, keeps a syringe of known volume and true
+concentration (the teaching control that tells the controller one
+concentration while the syringe holds another lives there), stops and alarms
+at the instant the syringe runs out (decided by time, so that it empties at
+any clock and any rate), refuses to run until a new one is loaded, and can be
+given an acknowledgement delay. The page constructs it from the setup; the
+pump and closed-loop tests that pre-date the driver pass unchanged against
+it.
+
+To drive a real pump, subclass `PumpDriver`, speak the pump's protocol inside
+those three methods, and hand it to the page as `window.FauxTCI.driver`
+before pressing Start: an instance, or a function of the case settings that
+returns one, called once per Start. A driver reused for a second case will
+be called with a time behind its own when the earlier case ran faster than
+real time (the clock restarts at each Start), which it must tolerate, as
+`SimulatedPump` does; the controller notes a reading ahead of its clock. In
+code, pass the driver to `FauxPump` as the `driver` option. `test/driver.test.js` shows the controller's side with small
+drivers: one that acknowledges two seconds late, one that delivers half of
+what it is told, one that occludes, one that changes its own rate, one that
+refuses a command, one whose totaliser resets, one that pauses itself, one
+that echoes rates at float32 precision, and one that throws. What a real
+driver must get right: times are seconds since the epoch on the controller's
+clock; rates are mL/hr; `volumeInfused` is the pump's own totaliser, never a
+re-integration of the command; an alarm carries the time it began and is
+reported until the condition is cleared on the pump; a stopped pump reports
+`rate` 0; and the three methods answer at once and never throw.
+
 ## How it was validated
 
 The fixtures in `test/fixtures/` were generated from stanpumpR at commit
@@ -234,7 +350,8 @@ index.html              the page (markup only)
 css/fauxtci.css         styles, light and dark
 js/pk.js                the drug models, eigenvalues, coefficients, ke0, closed-form advance
 js/tci.js               the API port: tciNextRate(request) -> response, tciApiDrugs(), tciApiModel()
-js/pump.js              the simulated pump and its controller (the section 7 safety contract)
+js/pump.js              the pump's controller (the section 7 safety contract), driving a pump through the driver
+js/driver.js            the pump driver interface, and SimulatedPump, the pump the page runs
 js/transport.js         in-page or HTTP transport
 js/app.js               the page: wiring, charts, tables, the API conversation panel, the clock
 js/md5.js               MD5 for model.hash
