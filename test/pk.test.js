@@ -53,7 +53,7 @@ const modelFor = (entry, extra = {}) =>
 test("fixtures are what the README describes", () => {
   assert.equal(models.entries.length, 16);
   assert.equal(ke0Solve.entries.length, 16);
-  assert.equal(models.stanpumpRCommit, "740b5055f12c9616cac4fec869ab2b6d1b3b777a");
+  assert.equal(models.stanpumpRCommit, "7d2d2f1b7727f39eba313fd8c5deea5b5104d959");
   assert.equal(ke0Solve.optimizer.outer.tol, OPTIMIZE_TOL);
   assert.equal(ke0Solve.optimizer.inner.tol, OPTIMIZE_TOL);
   assert.deepEqual(ke0Solve.optimizer.outer.interval, [0, 200]);

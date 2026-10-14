@@ -1,6 +1,6 @@
 {
-  "generatedAt": "2026-10-12T22:02:02Z",
-  "stanpumpRCommit": "740b5055f12c9616cac4fec869ab2b6d1b3b777a",
+  "generatedAt": "2026-10-14T22:29:19Z",
+  "stanpumpRCommit": "7d2d2f1b7727f39eba313fd8c5deea5b5104d959",
   "stanpumpRVersion": "0.0.1.9002",
   "rVersion": "R version 4.3.3 (2024-02-29)",
   "notes": "Each case: `response` is exactly what tciNextRate(request, receivedAt = <request now + 0.2 s>) returned, serialized with jsonlite::toJSON(auto_unbox = TRUE, digits = NA, null = 'null'), i.e. the body the Plumber router would send. `server.*` (package, version, commit, receivedAt, respondedAt, computeSeconds) is the generator's own clock and MUST NOT be compared.  `warnings` at the case level lists the response's warning codes for convenience.  All request numbers are stored with 15 significant digits and were fed to R exactly as stored (computed quantities were rounded to 15 digits before the call), so a port can replay `request` verbatim.  Error cases: `status`, `code`, `pointer`, `message` are the tci_api_error condition's fields; the HTTP body would be {apiVersion, requestId, errors: [{code, message, pointer}], server}. Base pump for every success case unless its request says otherwise: mL/hr, maxRate 1200, minRate 0.1, rateResolution 0.1, latency 1.5 s, interval 10 s; propofol 10 mg/mL to 3 mcg/mL effect, remifentanil 50 mcg/mL to 4 ng/mL effect; 70 kg 170 cm 50 y male.  The START of every clock is 2026-10-11T14:00:00.000Z.",
@@ -152,8 +152,8 @@
           "version": "0.0.1.9002",
           "commit": null,
           "receivedAt": "2026-10-11T14:00:00.200Z",
-          "respondedAt": "2026-10-12T22:02:07.058Z",
-          "computeSeconds": 115326.857524395
+          "respondedAt": "2026-10-14T22:29:24.532Z",
+          "computeSeconds": 289764.331921339
         }
       }
     },
@@ -315,8 +315,8 @@
           "version": "0.0.1.9002",
           "commit": null,
           "receivedAt": "2026-10-11T14:00:15.200Z",
-          "respondedAt": "2026-10-12T22:02:07.071Z",
-          "computeSeconds": 115311.870715618
+          "respondedAt": "2026-10-14T22:29:24.544Z",
+          "computeSeconds": 289749.343995094
         }
       }
     },
@@ -480,8 +480,8 @@
           "version": "0.0.1.9002",
           "commit": null,
           "receivedAt": "2026-10-11T14:00:20.200Z",
-          "respondedAt": "2026-10-12T22:02:07.081Z",
-          "computeSeconds": 115306.881431341
+          "respondedAt": "2026-10-14T22:29:24.553Z",
+          "computeSeconds": 289744.353374243
         }
       }
     },
@@ -1251,8 +1251,8 @@
           "version": "0.0.1.9002",
           "commit": null,
           "receivedAt": "2026-10-11T14:20:00.200Z",
-          "respondedAt": "2026-10-12T22:02:07.099Z",
-          "computeSeconds": 114126.899046659
+          "respondedAt": "2026-10-14T22:29:24.566Z",
+          "computeSeconds": 288564.365844488
         }
       }
     },
@@ -2022,8 +2022,8 @@
           "version": "0.0.1.9002",
           "commit": null,
           "receivedAt": "2026-10-11T14:20:00.200Z",
-          "respondedAt": "2026-10-12T22:02:07.109Z",
-          "computeSeconds": 114126.908578396
+          "respondedAt": "2026-10-14T22:29:24.576Z",
+          "computeSeconds": 288564.375746965
         }
       }
     },
@@ -2793,8 +2793,8 @@
           "version": "0.0.1.9002",
           "commit": null,
           "receivedAt": "2026-10-11T14:20:00.200Z",
-          "respondedAt": "2026-10-12T22:02:07.119Z",
-          "computeSeconds": 114126.918903828
+          "respondedAt": "2026-10-14T22:29:24.585Z",
+          "computeSeconds": 288564.385444641
         }
       }
     },
@@ -3570,8 +3570,8 @@
           "version": "0.0.1.9002",
           "commit": null,
           "receivedAt": "2026-10-11T14:20:00.200Z",
-          "respondedAt": "2026-10-12T22:02:07.136Z",
-          "computeSeconds": 114126.936306715
+          "respondedAt": "2026-10-14T22:29:24.603Z",
+          "computeSeconds": 288564.402931452
         }
       }
     },
@@ -4349,8 +4349,8 @@
           "version": "0.0.1.9002",
           "commit": null,
           "receivedAt": "2026-10-11T14:20:00.200Z",
-          "respondedAt": "2026-10-12T22:02:07.146Z",
-          "computeSeconds": 114126.946029425
+          "respondedAt": "2026-10-14T22:29:24.612Z",
+          "computeSeconds": 288564.411823034
         }
       }
     },
@@ -5127,8 +5127,8 @@
           "version": "0.0.1.9002",
           "commit": null,
           "receivedAt": "2026-10-11T14:20:00.200Z",
-          "respondedAt": "2026-10-12T22:02:07.811Z",
-          "computeSeconds": 114127.611014605
+          "respondedAt": "2026-10-14T22:29:25.293Z",
+          "computeSeconds": 288565.092970371
         }
       }
     },
@@ -5840,8 +5840,8 @@
           "version": "0.0.1.9002",
           "commit": null,
           "receivedAt": "2026-10-11T14:20:00.200Z",
-          "respondedAt": "2026-10-12T22:02:07.828Z",
-          "computeSeconds": 114127.628386259
+          "respondedAt": "2026-10-14T22:29:25.302Z",
+          "computeSeconds": 288565.101807833
         }
       }
     },
@@ -6611,8 +6611,8 @@
           "version": "0.0.1.9002",
           "commit": null,
           "receivedAt": "2026-10-11T14:20:00.200Z",
-          "respondedAt": "2026-10-12T22:02:07.838Z",
-          "computeSeconds": 114127.637858152
+          "respondedAt": "2026-10-14T22:29:25.311Z",
+          "computeSeconds": 288565.110659599
         }
       }
     },
@@ -7382,8 +7382,8 @@
           "version": "0.0.1.9002",
           "commit": null,
           "receivedAt": "2026-10-11T14:20:00.200Z",
-          "respondedAt": "2026-10-12T22:02:07.847Z",
-          "computeSeconds": 114127.647071362
+          "respondedAt": "2026-10-14T22:29:25.320Z",
+          "computeSeconds": 288565.119535208
         }
       }
     },
@@ -8153,8 +8153,8 @@
           "version": "0.0.1.9002",
           "commit": null,
           "receivedAt": "2026-10-11T14:20:00.200Z",
-          "respondedAt": "2026-10-12T22:02:07.861Z",
-          "computeSeconds": 114127.660852194
+          "respondedAt": "2026-10-14T22:29:25.328Z",
+          "computeSeconds": 288565.128081799
         }
       }
     },
@@ -8305,8 +8305,8 @@
           "version": "0.0.1.9002",
           "commit": null,
           "receivedAt": "2026-10-11T14:00:00.200Z",
-          "respondedAt": "2026-10-12T22:02:07.869Z",
-          "computeSeconds": 115327.668801785
+          "respondedAt": "2026-10-14T22:29:25.336Z",
+          "computeSeconds": 289765.136033058
         }
       }
     },
@@ -9076,8 +9076,8 @@
           "version": "0.0.1.9002",
           "commit": null,
           "receivedAt": "2026-10-11T14:20:00.200Z",
-          "respondedAt": "2026-10-12T22:02:07.878Z",
-          "computeSeconds": 114127.677652836
+          "respondedAt": "2026-10-14T22:29:25.345Z",
+          "computeSeconds": 288565.144619226
         }
       }
     },
@@ -9863,8 +9863,8 @@
           "version": "0.0.1.9002",
           "commit": null,
           "receivedAt": "2026-10-11T14:20:00.200Z",
-          "respondedAt": "2026-10-12T22:02:07.888Z",
-          "computeSeconds": 114127.687540531
+          "respondedAt": "2026-10-14T22:29:25.354Z",
+          "computeSeconds": 288565.154416084
         }
       }
     },
@@ -10644,8 +10644,8 @@
           "version": "0.0.1.9002",
           "commit": null,
           "receivedAt": "2026-10-11T14:20:00.200Z",
-          "respondedAt": "2026-10-12T22:02:07.897Z",
-          "computeSeconds": 114127.696891308
+          "respondedAt": "2026-10-14T22:29:25.363Z",
+          "computeSeconds": 288565.163123369
         }
       }
     },
@@ -11422,8 +11422,8 @@
           "version": "0.0.1.9002",
           "commit": null,
           "receivedAt": "2026-10-11T14:20:00.200Z",
-          "respondedAt": "2026-10-12T22:02:07.906Z",
-          "computeSeconds": 114127.705876589
+          "respondedAt": "2026-10-14T22:29:25.372Z",
+          "computeSeconds": 288565.17188096
         }
       }
     },
@@ -11574,8 +11574,8 @@
           "version": "0.0.1.9002",
           "commit": null,
           "receivedAt": "2026-10-11T14:00:00.200Z",
-          "respondedAt": "2026-10-12T22:02:07.915Z",
-          "computeSeconds": 115327.715474129
+          "respondedAt": "2026-10-14T22:29:25.381Z",
+          "computeSeconds": 289765.180728674
         }
       }
     },
@@ -11732,8 +11732,8 @@
           "version": "0.0.1.9002",
           "commit": null,
           "receivedAt": "2026-10-11T14:00:00.200Z",
-          "respondedAt": "2026-10-12T22:02:07.925Z",
-          "computeSeconds": 115327.724591017
+          "respondedAt": "2026-10-14T22:29:25.389Z",
+          "computeSeconds": 289765.189426422
         }
       }
     },
@@ -11890,8 +11890,8 @@
           "version": "0.0.1.9002",
           "commit": null,
           "receivedAt": "2026-10-11T14:00:00.200Z",
-          "respondedAt": "2026-10-12T22:02:07.934Z",
-          "computeSeconds": 115327.733947277
+          "respondedAt": "2026-10-14T22:29:25.399Z",
+          "computeSeconds": 289765.198623657
         }
       }
     },
@@ -12048,8 +12048,8 @@
           "version": "0.0.1.9002",
           "commit": null,
           "receivedAt": "2026-10-11T14:00:00.200Z",
-          "respondedAt": "2026-10-12T22:02:07.944Z",
-          "computeSeconds": 115327.744024038
+          "respondedAt": "2026-10-14T22:29:25.409Z",
+          "computeSeconds": 289765.209376574
         }
       }
     },
@@ -12194,8 +12194,8 @@
           "version": "0.0.1.9002",
           "commit": null,
           "receivedAt": "2026-10-11T14:00:00.200Z",
-          "respondedAt": "2026-10-12T22:02:07.954Z",
-          "computeSeconds": 115327.753868341
+          "respondedAt": "2026-10-14T22:29:25.424Z",
+          "computeSeconds": 289765.2242558
         }
       }
     },
@@ -12352,8 +12352,8 @@
           "version": "0.0.1.9002",
           "commit": null,
           "receivedAt": "2026-10-11T14:00:00.200Z",
-          "respondedAt": "2026-10-12T22:02:07.967Z",
-          "computeSeconds": 115327.767018557
+          "respondedAt": "2026-10-14T22:29:25.436Z",
+          "computeSeconds": 289765.235850811
         }
       }
     },
@@ -12521,8 +12521,8 @@
           "version": "0.0.1.9002",
           "commit": null,
           "receivedAt": "2026-10-11T14:00:15.200Z",
-          "respondedAt": "2026-10-12T22:02:07.985Z",
-          "computeSeconds": 115312.78512907
+          "respondedAt": "2026-10-14T22:29:25.445Z",
+          "computeSeconds": 289750.245305538
         }
       }
     },
@@ -12686,8 +12686,8 @@
           "version": "0.0.1.9002",
           "commit": null,
           "receivedAt": "2026-10-11T14:00:10.200Z",
-          "respondedAt": "2026-10-12T22:02:07.994Z",
-          "computeSeconds": 115317.794222355
+          "respondedAt": "2026-10-14T22:29:25.455Z",
+          "computeSeconds": 289755.254708052
         }
       }
     },
@@ -13199,8 +13199,8 @@
           "version": "0.0.1.9002",
           "commit": null,
           "receivedAt": "2026-10-11T14:20:00.200Z",
-          "respondedAt": "2026-10-12T22:02:08.006Z",
-          "computeSeconds": 114127.805799723
+          "respondedAt": "2026-10-14T22:29:25.466Z",
+          "computeSeconds": 288565.266184092
         }
       }
     },
@@ -13706,8 +13706,8 @@
           "version": "0.0.1.9002",
           "commit": null,
           "receivedAt": "2026-10-11T14:20:00.200Z",
-          "respondedAt": "2026-10-12T22:02:08.016Z",
-          "computeSeconds": 114127.816412687
+          "respondedAt": "2026-10-14T22:29:25.476Z",
+          "computeSeconds": 288565.27620697
         }
       }
     },
@@ -14219,8 +14219,8 @@
           "version": "0.0.1.9002",
           "commit": null,
           "receivedAt": "2026-10-11T14:20:00.200Z",
-          "respondedAt": "2026-10-12T22:02:08.026Z",
-          "computeSeconds": 114127.82628417
+          "respondedAt": "2026-10-14T22:29:25.487Z",
+          "computeSeconds": 288565.287067413
         }
       }
     },
@@ -14738,8 +14738,8 @@
           "version": "0.0.1.9002",
           "commit": null,
           "receivedAt": "2026-10-11T14:20:00.200Z",
-          "respondedAt": "2026-10-12T22:02:08.036Z",
-          "computeSeconds": 114127.836229324
+          "respondedAt": "2026-10-14T22:29:25.501Z",
+          "computeSeconds": 288565.300884247
         }
       }
     },
@@ -15258,8 +15258,8 @@
           "version": "0.0.1.9002",
           "commit": null,
           "receivedAt": "2026-10-11T14:20:00.200Z",
-          "respondedAt": "2026-10-12T22:02:08.046Z",
-          "computeSeconds": 114127.845679283
+          "respondedAt": "2026-10-14T22:29:25.510Z",
+          "computeSeconds": 288565.309878111
         }
       }
     },
@@ -15778,8 +15778,8 @@
           "version": "0.0.1.9002",
           "commit": null,
           "receivedAt": "2026-10-11T14:20:00.200Z",
-          "respondedAt": "2026-10-12T22:02:08.428Z",
-          "computeSeconds": 114128.227830172
+          "respondedAt": "2026-10-14T22:29:25.876Z",
+          "computeSeconds": 288565.676058054
         }
       }
     },
@@ -16299,8 +16299,8 @@
           "version": "0.0.1.9002",
           "commit": null,
           "receivedAt": "2026-10-11T14:20:00.200Z",
-          "respondedAt": "2026-10-12T22:02:08.437Z",
-          "computeSeconds": 114128.237470627
+          "respondedAt": "2026-10-14T22:29:25.885Z",
+          "computeSeconds": 288565.685304165
         }
       }
     },
@@ -16812,8 +16812,8 @@
           "version": "0.0.1.9002",
           "commit": null,
           "receivedAt": "2026-10-11T14:20:00.200Z",
-          "respondedAt": "2026-10-12T22:02:08.447Z",
-          "computeSeconds": 114128.246892691
+          "respondedAt": "2026-10-14T22:29:25.894Z",
+          "computeSeconds": 288565.69415617
         }
       }
     },
@@ -17325,8 +17325,8 @@
           "version": "0.0.1.9002",
           "commit": null,
           "receivedAt": "2026-10-11T14:20:00.200Z",
-          "respondedAt": "2026-10-12T22:02:08.457Z",
-          "computeSeconds": 114128.256756067
+          "respondedAt": "2026-10-14T22:29:25.903Z",
+          "computeSeconds": 288565.702934027
         }
       }
     },
@@ -17832,8 +17832,8 @@
           "version": "0.0.1.9002",
           "commit": null,
           "receivedAt": "2026-10-11T14:20:00.200Z",
-          "respondedAt": "2026-10-12T22:02:08.466Z",
-          "computeSeconds": 114128.26582098
+          "respondedAt": "2026-10-14T22:29:25.911Z",
+          "computeSeconds": 288565.711319208
         }
       }
     },
@@ -17990,8 +17990,8 @@
           "version": "0.0.1.9002",
           "commit": null,
           "receivedAt": "2026-10-11T14:00:00.200Z",
-          "respondedAt": "2026-10-12T22:02:08.475Z",
-          "computeSeconds": 115328.27477026
+          "respondedAt": "2026-10-14T22:29:25.931Z",
+          "computeSeconds": 289765.730852604
         }
       }
     },
@@ -18503,8 +18503,8 @@
           "version": "0.0.1.9002",
           "commit": null,
           "receivedAt": "2026-10-11T14:20:00.200Z",
-          "respondedAt": "2026-10-12T22:02:08.490Z",
-          "computeSeconds": 114128.290151358
+          "respondedAt": "2026-10-14T22:29:25.939Z",
+          "computeSeconds": 288565.738914013
         }
       }
     },
@@ -19032,8 +19032,8 @@
           "version": "0.0.1.9002",
           "commit": null,
           "receivedAt": "2026-10-11T14:20:00.200Z",
-          "respondedAt": "2026-10-12T22:02:08.499Z",
-          "computeSeconds": 114128.299050093
+          "respondedAt": "2026-10-14T22:29:25.948Z",
+          "computeSeconds": 288565.747754574
         }
       }
     },
@@ -19554,8 +19554,8 @@
           "version": "0.0.1.9002",
           "commit": null,
           "receivedAt": "2026-10-11T14:20:00.200Z",
-          "respondedAt": "2026-10-12T22:02:08.508Z",
-          "computeSeconds": 114128.307796478
+          "respondedAt": "2026-10-14T22:29:25.956Z",
+          "computeSeconds": 288565.756477594
         }
       }
     },
@@ -20073,8 +20073,8 @@
           "version": "0.0.1.9002",
           "commit": null,
           "receivedAt": "2026-10-11T14:20:00.200Z",
-          "respondedAt": "2026-10-12T22:02:08.517Z",
-          "computeSeconds": 114128.316842318
+          "respondedAt": "2026-10-14T22:29:25.965Z",
+          "computeSeconds": 288565.764871597
         }
       }
     },
@@ -20231,8 +20231,8 @@
           "version": "0.0.1.9002",
           "commit": null,
           "receivedAt": "2026-10-11T14:00:00.200Z",
-          "respondedAt": "2026-10-12T22:02:08.526Z",
-          "computeSeconds": 115328.326384306
+          "respondedAt": "2026-10-14T22:29:25.973Z",
+          "computeSeconds": 289765.773276567
         }
       }
     },
@@ -20394,8 +20394,8 @@
           "version": "0.0.1.9002",
           "commit": null,
           "receivedAt": "2026-10-11T14:00:00.200Z",
-          "respondedAt": "2026-10-12T22:02:08.536Z",
-          "computeSeconds": 115328.336131096
+          "respondedAt": "2026-10-14T22:29:25.982Z",
+          "computeSeconds": 289765.782201052
         }
       }
     },
@@ -20557,8 +20557,8 @@
           "version": "0.0.1.9002",
           "commit": null,
           "receivedAt": "2026-10-11T14:00:00.200Z",
-          "respondedAt": "2026-10-12T22:02:08.546Z",
-          "computeSeconds": 115328.345944643
+          "respondedAt": "2026-10-14T22:29:25.992Z",
+          "computeSeconds": 289765.791540146
         }
       }
     },
@@ -20715,8 +20715,8 @@
           "version": "0.0.1.9002",
           "commit": null,
           "receivedAt": "2026-10-11T14:00:00.200Z",
-          "respondedAt": "2026-10-12T22:02:08.556Z",
-          "computeSeconds": 115328.356339693
+          "respondedAt": "2026-10-14T22:29:26.001Z",
+          "computeSeconds": 289765.800992727
         }
       }
     },
@@ -20867,8 +20867,8 @@
           "version": "0.0.1.9002",
           "commit": null,
           "receivedAt": "2026-10-11T14:00:00.200Z",
-          "respondedAt": "2026-10-12T22:02:08.566Z",
-          "computeSeconds": 115328.365667105
+          "respondedAt": "2026-10-14T22:29:26.010Z",
+          "computeSeconds": 289765.810287952
         }
       }
     },
@@ -21025,8 +21025,8 @@
           "version": "0.0.1.9002",
           "commit": null,
           "receivedAt": "2026-10-11T14:00:00.200Z",
-          "respondedAt": "2026-10-12T22:02:08.575Z",
-          "computeSeconds": 115328.375394344
+          "respondedAt": "2026-10-14T22:29:26.020Z",
+          "computeSeconds": 289765.819590092
         }
       }
     },
@@ -21177,8 +21177,8 @@
           "version": "0.0.1.9002",
           "commit": null,
           "receivedAt": "2026-10-11T14:00:00.200Z",
-          "respondedAt": "2026-10-12T22:02:08.585Z",
-          "computeSeconds": 115328.385421276
+          "respondedAt": "2026-10-14T22:29:26.029Z",
+          "computeSeconds": 289765.82886529
         }
       }
     },
@@ -21413,8 +21413,8 @@
           "version": "0.0.1.9002",
           "commit": null,
           "receivedAt": "2026-10-11T14:31:58.700Z",
-          "respondedAt": "2026-10-12T22:02:08.596Z",
-          "computeSeconds": 113409.896043539
+          "respondedAt": "2026-10-14T22:29:26.039Z",
+          "computeSeconds": 287847.338912249
         }
       }
     }
@@ -21501,7 +21501,7 @@
       "status": 422,
       "code": "DRUG_NOT_TCI",
       "pointer": "/drug",
-      "message": "midazolam has no target-controlled infusion in stanpumpR; the TCI drugs are propofol, remifentanil, fentanyl, alfentanil, sufentanil, hydromorphone, ketamine, etomidate, lidocaine",
+      "message": "midazolam has no target-controlled infusion in stanpumpR; the TCI drugs are propofol, remifentanil, fentanyl, alfentanil, sufentanil, hydromorphone, ketamine, etomidate, lidocaine, oxycodone",
       "requestId": "fx-err-non-tci-drug"
     },
     {
