@@ -280,7 +280,7 @@ reported until the condition is cleared on the pump; a stopped pump reports
 ## How it was validated
 
 The fixtures in `test/fixtures/` were generated from stanpumpR at commit
-`740b5055f12c9616cac4fec869ab2b6d1b3b777a` (version 0.0.1.9002, R 4.3.3,
+`7d2d2f1b7727f39eba313fd8c5deea5b5104d959` (version 0.0.1.9002, R 4.3.3,
 jsonlite 1.8.8) by `test/fixtures/generate.R`; `test/fixtures/README.md`
 describes each file and the tolerances a port should aim for. The suite
 (`node --test 'test/*.js'`, Node 22, about five seconds) replays them; the

@@ -172,7 +172,7 @@ function expectError(request, status, code, pointer, options = {}) {
 test("rate-cases.json is what the README describes", () => {
   assert.equal(rateCases.cases.length, 49);
   assert.equal(rateCases.errors.length, 13);
-  assert.equal(rateCases.stanpumpRCommit, "740b5055f12c9616cac4fec869ab2b6d1b3b777a");
+  assert.equal(rateCases.stanpumpRCommit, "7d2d2f1b7727f39eba313fd8c5deea5b5104d959");
   for (const c of rateCases.cases) {
     assert.deepEqual(c.response.warnings.map((w) => w.code), c.warnings, c.name);
   }

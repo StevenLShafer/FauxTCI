@@ -147,8 +147,9 @@ const STANPUMPR_LIBRARY_DRUGS = Object.freeze([
   "eslicarbazepine", "diamorphine",
 ]);
 // The library drugs whose row offers a target unit in stanpumpR (tciApiDrugNames()).
+// Oxycodone joined them at stanpumpR 7d2d2f1 (its row gained target units).
 const STANPUMPR_TCI_DRUGS = Object.freeze(["propofol", "remifentanil", "fentanyl", "alfentanil",
-  "sufentanil", "hydromorphone", "ketamine", "etomidate", "lidocaine"]);
+  "sufentanil", "hydromorphone", "ketamine", "etomidate", "lidocaine", "oxycodone"]);
 
 // ---------------------------------------------------------------------------
 // Errors and warnings

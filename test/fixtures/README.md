@@ -7,7 +7,7 @@ propofol and remifentanil PK models (`R/drugs_propofol.R`, `R/drugs_remifentanil
 
 | Provenance | |
 |---|---|
-| stanpumpR commit | `740b5055f12c9616cac4fec869ab2b6d1b3b777a` (branch `master`) |
+| stanpumpR commit | `7d2d2f1b7727f39eba313fd8c5deea5b5104d959` (branch `master`) |
 | stanpumpR version | 0.0.1.9002 (`DESCRIPTION`) |
 | R | 4.3.3 (2024-02-29), Linux x86_64; jsonlite 1.8.8 |
 | Serialization | `jsonlite::toJSON(x, auto_unbox = TRUE, digits = NA, null = "null", pretty = TRUE)` (15 significant digits, scalars unboxed, `null` for R `NULL`) -- the same call the Plumber router uses |
