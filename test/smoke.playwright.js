@@ -318,7 +318,14 @@ test("the page's alarms and the window.FauxTCI.driver hook in Chromium: the syri
       const { SimulatedPump } = await import("./js/driver.js");
       class OccludingPump extends SimulatedPump {
         constructor(o) { super(o); this.occludeAt = null; this.loads = 0; }
-        loadSyringe(time, syringe) { this.loads += 1; if (this.occludeAt === null) this.occludeAt = time + 20; return super.loadSyringe(time, syringe); }
+        loadSyringe(time, syringe) {
+          this.loads += 1;
+          if (this.occludeAt === null) {
+            this.occludeAt = time + 120;
+            this.notices.push({ kind: "lowBattery", message: "battery low", at: time });
+          }
+          return super.loadSyringe(time, syringe);
+        }
         _advance(to) {
           if (this.occludeAt !== null && this.state === "running" && to >= this.occludeAt) {
             super._advance(this.occludeAt);
@@ -341,22 +348,28 @@ test("the page's alarms and the window.FauxTCI.driver hook in Chromium: the syri
     await page.fill("#syringe-volume", "50");
     await page.fill("#target-value", "3");
     await page.click("#start");
+    // The pump's notice shows on the alarm line, as a notice, until the alarm takes it.
+    await page.waitForFunction(() => /battery low/.test(document.getElementById("alarm").textContent), null, { timeout: 10000 });
+    assert.equal(await text("#alarm"), "Pump: battery low");
+    assert.ok(await page.evaluate(() => document.getElementById("alarm").classList.contains("is-notice")), "a notice is not styled as an alarm");
     await page.waitForFunction(() => /occluded/.test(document.getElementById("alarm").textContent), null, { timeout: 30000 });
     const built = await page.evaluate(() => window.FauxTCI.built);
     assert.deepEqual(built, { syringeVolume: 50, drug: "propofol" }, "the hook was called with the case settings");
     assert.equal(await page.evaluate(() => window.FauxTCI.instance.loads), 1, "the driver was told the initial syringe");
-    assert.match(await text("#alarm"), /Set a target or press Resume to restart\./);
+    assert.match(await text("#alarm"), /Clear the condition on the pump, then set a target or press Resume\./);
+    assert.ok(!(await page.evaluate(() => document.getElementById("alarm").classList.contains("is-notice"))));
     assert.equal(await text("#phase"), "ALARM");
     assert.equal(Number(await text("#rate-value")), 0);
     const occlusionRow = await lastRecordRow();
     assert.ok(occlusionRow && occlusionRow[1] === "rate change" && occlusionRow[2] === "0" && occlusionRow[4] === "pump", `the pump's stop is in the record: ${JSON.stringify(occlusionRow)}`);
     const sim = await page.evaluate(() => window.FauxTCI.instance.volumeInfused);
-    assert.ok(sim > 0 && sim < 10, `the driver's own totaliser ran the case (${sim} mL)`);
+    assert.ok(sim > 0 && sim < 20, `the driver's own totaliser ran the case (${sim} mL)`);
     await mkdir(RESULTS, { recursive: true });
     await page.screenshot({ path: path.join(RESULTS, "smoke-driver.png"), fullPage: true });
     await page.click("#stop-case");
     await page.waitForFunction(() => document.getElementById("start").getBoundingClientRect().height > 0, null, { timeout: 20000 });
     assert.equal(await text("#phase"), "ALARM", "the pump's condition stands after Stop");
+    assert.equal(await text("#alarm"), "ALARM: line occluded: the pump stopped.", "once the case has ended the hint, whose controls are disabled, is dropped");
 
     assert.deepEqual(pageErrors, [], "no page errors");
     assert.deepEqual(consoleErrors, [], "no console errors");

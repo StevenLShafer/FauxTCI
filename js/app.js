@@ -641,15 +641,23 @@ function updateFace(snap) {
   const planWord = snap.plan === "effectSite" ? "effect-site plan" : snap.plan === "plasma" ? "plasma hold" : snap.plan === "off" ? "plan: off" : "";
   el.plan.textContent = snap.started && snap.plan ? `(${planWord})` : "";
 
+  // The alarm line: the alarm with the way out while the case runs (the
+  // message alone once it has ended), or else a notice the pump reports.
   let alarmText = "";
   if (snap.state === "alarm" && snap.alarms.length) {
-    const hint = snap.alarmKind === "syringeEmpty" ? "Change the syringe to continue."
-      : snap.alarmKind === "driverFault" ? "Check the pump link, then set a target to retry."
-        : "Set a target or press Resume to restart.";
-    alarmText = `ALARM: ${snap.alarms[snap.alarms.length - 1].message}. ${hint}`;
+    const kind = snap.alarmKind;
+    const hint = !app.running ? ""
+      : kind === "syringeEmpty" ? " Change the syringe to continue."
+        : kind === "driverFault" ? " Check the pump link, then set a target to retry."
+          : kind === "fallbackExpired" ? " Set a target or press Resume to restart."
+            : " Clear the condition on the pump, then set a target or press Resume.";
+    alarmText = `ALARM: ${snap.alarms[snap.alarms.length - 1].message}.${hint}`;
+  } else if (snap.pump && snap.pump.notices && snap.pump.notices.length) {
+    alarmText = `Pump: ${snap.pump.notices[snap.pump.notices.length - 1].message}`;
   }
   if (alarmText !== app.lastAlarm) {
     el.alarm.textContent = alarmText;
+    el.alarm.classList.toggle("is-notice", alarmText.startsWith("Pump: "));
     app.lastAlarm = alarmText;
   }
 
@@ -862,7 +870,7 @@ function patchCard(li, x) {
   const status = li.querySelector(".xcard-status");
   status.textContent = x.status === null ? "" : String(x.status);
   status.classList.toggle("is-error", x.status !== null && x.status !== 200);
-  const isError = x.outcome === "error" || x.outcome === "no-response" || (x.status !== null && x.status !== 200);
+  const isError = x.outcome === "error" || x.outcome === "no-response" || x.outcome === "refused" || (x.status !== null && x.status !== 200);
   const summary = li.querySelector(".xcard-summary");
   summary.textContent = x.summary;
   summary.classList.toggle("is-error", isError);

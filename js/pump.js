@@ -265,8 +265,11 @@ export class FauxPump {
     this._seenNotices = new Set(); // "kind@at" of the driver notices already noted
     this._totals = { volume: { last: null, offset: 0 }, mass: { last: null, offset: 0 } }; // the pump's raw totalisers, rebased to the case
     this._volumeAtLoad = 0; // this.volumeInfused when the syringe was last loaded
-    this._pumpPaused = false; // the pump paused itself (reading.state "paused")
+    this._pumpPaused = false; // the pump paused itself (reading.state "paused"), and no one else has paused or cleared since
+    this._pendingMass = 0; // mass a command's reading showed delivered, not yet credited to the truth
+    this._syringePending = false; // a syringe change the driver has not accepted yet
     this._massUnitsWarned = false;
+    this._clockSkewNoted = false;
 
     // The pump's limits and timing.
     this.rateUnits = "mL/hr";
@@ -469,7 +472,7 @@ export class FauxPump {
     this._commanded = { value: j15(value), source };
     const reading = this._driverCall(() => this.driver.infuse(time, value), time);
     if (!reading) return;
-    this._absorbTotals(reading, time);
+    this._pendingMass += this._absorbTotals(reading, time);
     this._absorbEvents(reading, time);
   }
 
@@ -520,6 +523,10 @@ export class FauxPump {
       return null;
     }
     this._standingAlarms.delete("driverFault"); // the link is back; a later fault is raised again
+    if (isFiniteNumber(reading.time) && reading.time > now + 1 && !this._clockSkewNoted) {
+      this._clockSkewNoted = true;
+      this._note(now, `the pump's reading is ${sig(reading.time - now, 3)} s ahead of the controller's clock: a driver reused from an earlier case, or a clock out of step`);
+    }
     return reading;
   }
 
@@ -533,12 +540,19 @@ export class FauxPump {
 
   // Tell the driver the syringe in the pump: at start() and on every change.
   _loadDriverSyringe(now) {
-    const reading = this._driverCall(() => this.driver.loadSyringe(now, {
-      volume: this.syringeVolume, concentration: this.trueConcBase, units: this.massUnits, drug: this.drug,
-    }), now);
+    const syringe = { volume: this.syringeVolume, concentration: this.trueConcBase, units: this.massUnits, drug: this.drug };
+    const reading = this._driverCall(() => this.driver.loadSyringe(now, syringe), now);
     if (reading) {
-      this._absorbTotals(reading, now);
+      this._pendingMass += this._absorbTotals(reading, now);
       if (this.started) this._absorbEvents(reading, now);
+      if (this._syringePending) {
+        this._syringePending = false;
+        this._note(now, "the syringe change has reached the pump");
+      }
+    } else {
+      // The driver did not take it: it is sent again at the first reading that comes.
+      this._syringePending = true;
+      this._note(now, "the syringe change did not reach the pump: it will be sent again when the pump answers");
     }
     // The syringe just loaded is full; the volume since the load counts from here.
     this._volumeAtLoad = this.volumeInfused;
@@ -557,19 +571,25 @@ export class FauxPump {
     // With no reading the delivery is unknown: nothing is credited to the
     // patient for this step, and the totaliser's next reading brings in all
     // that was delivered meanwhile.
-    const massDelivered = reading ? this._absorbTotals(reading, to) : 0;
+    // Mass a command's reading showed delivered (a status frame that arrived
+    // with an acknowledgement) is credited here, with this step's.
+    const massDelivered = (reading ? this._absorbTotals(reading, to) : 0) + this._pendingMass;
+    this._pendingMass = 0;
     this.truth = advance(this.truth, dtMin, massDelivered / dtMin, this.model);
     this.belief = advance(this.belief, dtMin, this._baseRate(this.rate, this.toldConcBase), this.model);
     this.t = to;
     if (to - this.lastSampleAt >= 1 - EPS) this._sample(false);
-    if (reading) this._absorbEvents(reading, to);
+    if (reading) {
+      this._absorbEvents(reading, to);
+      if (this._syringePending) this._loadDriverSyringe(to);
+    }
   }
 
   // A driver event fell due at the physics time: read the pump without advancing.
   _pollDriver(now) {
     const reading = this._driverCall(() => this.driver.infuse(now, null), now);
     if (!reading) return;
-    this._absorbTotals(reading, now);
+    this._pendingMass += this._absorbTotals(reading, now);
     this._absorbEvents(reading, now);
   }
 
@@ -669,13 +689,15 @@ export class FauxPump {
       if (wasRunning || this.rate !== 0 || this._commanded) {
         const stopped = this._driverCall(() => this.driver.infuse(now, 0), now);
         if (stopped) {
-          this._absorbTotals(stopped, now);
+          this._pendingMass += this._absorbTotals(stopped, now);
           r = stopped;
         }
       }
-      this._commanded = null;
       this.segment = null;
       const stoppedRate = j15(isFiniteNumber(r.rate) ? r.rate : 0);
+      // A stop the pump has yet to acknowledge stays a command, of the pump's
+      // own kind, so the later reading that shows it is not "unasked".
+      this._commanded = stoppedRate === 0 ? null : { value: 0, source: "pump" };
       for (const a of fresh) {
         const key = `${a.kind}@${isFiniteNumber(a.at) ? a.at : "?"}`;
         const first = !this._raisedAlarms.has(key);
@@ -1044,7 +1066,7 @@ export class FauxPump {
         // The command's own reading raised an alarm or showed the pump
         // paused: the plan is not run and no segment is installed.
         x.caseTimeApplied = at * 1000;
-        this._setOutcome(x, "refused", `the pump reported ${this.state === "alarm" ? this.alarmKind : this.state} when commanded: ${summary} not run`);
+        this._setOutcome(x, "refused", `not run: the pump reported ${this.state === "alarm" ? this.alarmKind : this.state} when commanded. The plan was: ${summary}`);
         return;
       }
       this.segment = {
@@ -1115,6 +1137,7 @@ export class FauxPump {
     if (this.state === "alarm") {
       this.state = "running";
       this.alarmKind = null;
+      this._pumpPaused = false;
       // A condition the pump still reports is raised again at the next reading.
       this._standingAlarms.clear();
     }
@@ -1233,7 +1256,8 @@ export class FauxPump {
     this.compactedUntil = now;
     this.lastCompactionAt = now;
     this._sample(true);
-    if (this.target.value > 0) {
+    // The first request, unless the driver's first answer put the pump in alarm.
+    if (this.target.value > 0 && this._controllerActive()) {
       this.nextRequestAt = now;
       this._run(now);
     }
@@ -1293,7 +1317,11 @@ export class FauxPump {
   /** Pause: rate 0 at once (recorded), pump.state "paused" in the requests, which continue. */
   pause() {
     this._localEvent((now) => {
-      if (!this.started || this.state !== "running") return;
+      if (!this.started) return;
+      // A Pause over a pause the pump made itself is the user's from now on:
+      // the pump running again does not undo it.
+      this._pumpPaused = false;
+      if (this.state !== "running") return;
       this._setRate(now, 0, "manual");
       this.segment = null;
       this.state = "paused";
@@ -1306,6 +1334,7 @@ export class FauxPump {
     this._localEvent((now) => {
       if (!this.started || this.state === "running") return;
       if (this.state === "alarm") this._clearAlarm();
+      this._pumpPaused = false;
       this.state = "running";
       this._note(now, "resumed");
     });

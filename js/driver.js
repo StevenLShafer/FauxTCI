@@ -34,13 +34,19 @@
 // own cached status, and never throws.  A real driver talks to its pump in
 // the background (a serial port, Bluetooth, a socket), keeps the last status
 // it received, issues each command when infuse() asks for it, and answers
-// infuse() from what it has.  The controller never calls the driver with a
-// `time` earlier than a previous call's.  A method that throws, or returns a
-// Promise or anything but a reading, is a driver fault: the controller
-// raises the alarm "driverFault", stops asking the server, records nothing
-// it has not seen, and keeps its own clock running; a reading that then
-// arrives normally clears the fault (the alarm stays until the user clears
-// it, as every alarm does).
+// infuse() from what it has.  Within a case the controller never calls the
+// driver with a `time` earlier than a previous call's.  Across cases it
+// may: the page calls its hook once per Start, and a case's clock can start
+// behind the previous case's when that one ran faster than real time, so a
+// driver reused for a second case (an instance, or a function returning the
+// same one) must tolerate a step back (SimulatedPump reads it as now; the
+// controller notes a reading ahead of its clock).  A method that throws, or
+// returns a Promise or anything but a reading, is a driver fault: the
+// controller raises the alarm "driverFault", stops asking the server,
+// records nothing it has not seen, and keeps its own clock running; a
+// reading that then arrives normally clears the fault (the alarm stays
+// until the user clears it, as every alarm does).  horizon() is the
+// exception: a throw, or anything but a number, reads as null.
 //
 // THE READING
 // ===========
@@ -88,7 +94,9 @@
 //                     any other ("doorOpen", ...) is raised as it comes.
 //   notices           [{ kind, message, at }] optional: conditions that do
 //                     not stop the pump (low battery, near end of infusion).
-//                     Noted on the pump face once each, never acted on.
+//                     Shown on the pump face while the pump reports them,
+//                     noted once each in the controller's log
+//                     (snapshot().notes), never acted on.
 //
 // SimulatedPump is the pump FauxTCI runs: it delivers exactly the commanded
 // rate, keeps a syringe of known volume and true concentration, stops and

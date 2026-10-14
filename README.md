@@ -180,14 +180,16 @@ The calling convention: the three methods are **synchronous**. Each returns
 at once, from the driver's own cached status, and never throws. A real
 driver talks to its pump in the background (a serial port, Bluetooth, a
 socket), keeps the last status it received, issues each command when
-`infuse()` asks for it, and answers `infuse()` from what it has. The
-controller never calls the driver with a `time` earlier than a previous
-call's. A method that throws, or returns a Promise or anything but a
-reading, is a **driver fault**: the controller raises the alarm
-`driverFault`, stops asking the server, records nothing it has not seen,
-and keeps its own clock running; the first reading that arrives normally
-clears the fault (the alarm stays, as every alarm does, until the user
-clears it).
+`infuse()` asks for it, and answers `infuse()` from what it has. Within a
+case the controller never calls the driver with a `time` earlier than a
+previous call's; across cases it may, since the page's clock restarts at
+each Start (see the hook below). A method that throws, or returns a
+Promise or anything but a reading, is a **driver fault**: the controller
+raises the alarm `driverFault`, stops asking the server, records nothing
+it has not seen, and keeps its own clock running; the first reading that
+arrives normally clears the fault (the alarm stays, as every alarm does,
+until the user clears it). `horizon()` is the exception: a throw, or
+anything but a number, reads as null.
 
 A reading is the pump's own account of itself as of `time`:
 
@@ -232,10 +234,13 @@ What the controller does with it:
   reporting the alarm until the condition is cleared on the pump; if the
   user clears it first it comes back at the next reading, so the controller
   cannot run a pump that will not. `syringeEmpty` and `occlusion` are the
-  kinds the API's `pump.state` names; any other kind (`doorOpen`, whatever
-  the pump calls it) is raised as it comes. A condition that does not stop
-  the pump (low battery, near end of infusion) belongs in `notices`: noted
-  on the face once, never acted on.
+  kinds the API's `pump.state` names, and the controller's own state for
+  them (it does not ask the server while in alarm; once the user clears the
+  alarm, a pump still stopped is reported as `standby`); any other kind
+  (`doorOpen`, whatever the pump calls it) is raised as it comes. A
+  condition that does not stop the pump (low battery, near end of
+  infusion) belongs in `notices`: shown on the face while the pump reports
+  it, noted once in the controller's log, never acted on.
 * **The pump's state is honoured.** A pump paused from its own panel pauses
   the controller (the plan is noted, not run, and the request says
   `paused`); when the pump runs again the controller resumes and asks at
@@ -255,10 +260,13 @@ pump and closed-loop tests that pre-date the driver pass unchanged against
 it.
 
 To drive a real pump, subclass `PumpDriver`, speak the pump's protocol inside
-those three methods, and hand an instance to the page as
-`window.FauxTCI.driver` before pressing Start (an instance, or a function of
-the case settings that returns one); in code, pass it to `FauxPump` as the
-`driver` option. `test/driver.test.js` shows the controller's side with small
+those three methods, and hand it to the page as `window.FauxTCI.driver`
+before pressing Start: an instance, or a function of the case settings that
+returns one, called once per Start. A driver reused for a second case will
+be called with a time behind its own when the earlier case ran faster than
+real time (the clock restarts at each Start), which it must tolerate, as
+`SimulatedPump` does; the controller notes a reading ahead of its clock. In
+code, pass the driver to `FauxPump` as the `driver` option. `test/driver.test.js` shows the controller's side with small
 drivers: one that acknowledges two seconds late, one that delivers half of
 what it is told, one that occludes, one that changes its own rate, one that
 refuses a command, one whose totaliser resets, one that pauses itself, one

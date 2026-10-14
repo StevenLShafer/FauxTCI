@@ -342,6 +342,8 @@ input[type="range"] { width: 100%; }
    the accessibility tree as a live region. */
 .alarm:empty { position: absolute; }
 .alarm:not(:empty) { background: var(--alert-bg); border-radius: 6px; padding: 0.5rem 0.7rem; margin: 0.2rem 0; }
+.alarm.is-notice { color: var(--muted); font-weight: 500; }
+.alarm.is-notice:not(:empty) { background: rgba(127, 127, 127, 0.12); }
 
 .segment { margin: 0.15rem 0 0; }
 .progress { height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; }

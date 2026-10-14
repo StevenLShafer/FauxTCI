@@ -364,7 +364,7 @@ test("a pump that delivers half the commanded rate: the truth follows the pump's
   assert.ok(commanded[0] === 1200, "the record is the rate commanded and acknowledged, not the volume delivered");
 });
 
-test("an alarm the pump reports stops the controller at the alarm's own time; target 0 leaves it stopped; a cleared alarm the pump still reports comes back; occlusion is the request's pump.state", async () => {
+test("an alarm the pump reports stops the controller at the alarm's own time; target 0 leaves it stopped; a cleared alarm the pump still reports comes back; occlusion is the controller's state and a stopped pump is standby once cleared", async () => {
   const clock = fakeClock();
   // The line occludes 5.2 s in, during the loading infusion.
   const driver = new OccludingPump({ syringeVolume: 50, concentration: 10, massUnits: "mg", occludeAt: T0 + 5.2 });
@@ -373,7 +373,7 @@ test("an alarm the pump reports stops the controller at the alarm's own time; ta
   let snap = pump.snapshot();
   assert.equal(snap.state, "alarm");
   assert.equal(snap.alarmKind, "occlusion");
-  assert.equal(snap.apiState, "occlusion", "the contract names occlusion as a pump state");
+  assert.equal(snap.apiState, "occlusion", "the controller's own state is the kind the contract names (it does not ask while in alarm)");
   assert.equal(snap.rate, 0);
   const stop = rateEvents(snap).pop();
   assert.equal(stop.rate, 0);
@@ -402,7 +402,9 @@ test("an alarm the pump reports stops the controller at the alarm's own time; ta
   assert.equal(snap.alarms.length, 2);
   assert.equal(snap.rate, 0);
   assert.equal(snap.nextRequestAt, null, "a response discarded in alarm leaves no request scheduled");
-  assert.equal(snap.exchanges[snap.exchanges.length - 1].outcome, "late-discarded");
+  const cleared = snap.exchanges[snap.exchanges.length - 1];
+  assert.equal(cleared.outcome, "late-discarded");
+  assert.equal(cleared.request.pump.state, "standby", "once the user clears the alarm, a pump still stopped is reported as standby");
   // Once the line is cleared on the pump, a new target restarts the case.
   driver.clearOcclusion();
   pump.setTarget(3);
@@ -840,4 +842,206 @@ test("a rate change the pump reports late, with its true acknowledgement time, k
   assert.equal(first.rate, 1200);
   assert.ok(Math.abs(first.at - 2.5) < 1e-3, `the late-reported change is placed no earlier than the bolus already recorded (${first.at} s)`);
   assert.equal(first.source, "tci");
+});
+
+// ---------------------------------------------------------------------------
+// After the second review: who paused, mass seen in a command's reading, a
+// case that starts in alarm, a syringe change the driver did not take, a
+// stop acknowledged late, and a reading ahead of the clock.
+
+class PausingPump extends SimulatedPump {
+  constructor(o) { super(o); this.pauseAt = o.pauseAt === undefined ? null : o.pauseAt; this.unpauseAt = o.unpauseAt === undefined ? null : o.unpauseAt; }
+  _advance(to) {
+    if (this.pauseAt !== null && to >= this.pauseAt) {
+      super._advance(this.pauseAt);
+      this.rate = 0;
+      this.acknowledgedAt = this.pauseAt;
+      this.state = "paused";
+      this.pauseAt = null;
+    }
+    if (this.unpauseAt !== null && to >= this.unpauseAt) {
+      super._advance(this.unpauseAt);
+      this.state = "running";
+      this.unpauseAt = null;
+    }
+    super._advance(to);
+  }
+  _applyCommand() { super._applyCommand(); if (this.state === "paused") this.rate = 0; }
+}
+
+test("the user's own Pause holds after a pause the pump made earlier: the flag follows who paused", async () => {
+  // Path 1: the pump pauses itself, the user presses Resume while it is still
+  // paused (the controller re-pauses at the next reading), the pump runs
+  // again on its own (the controller resumes), and later the user pauses.
+  const c1 = fakeClock();
+  const d1 = new PausingPump({ syringeVolume: 50, concentration: 10, pauseAt: T0 + 20.3, unpauseAt: T0 + 30 });
+  const p1 = await startedPump(c1, { driver: d1 });
+  await runTo(p1, c1, 25);
+  assert.equal(p1.snapshot().state, "paused");
+  p1.resume();
+  await runTo(p1, c1, 26);
+  assert.equal(p1.snapshot().state, "paused", "the pump is still paused, so the controller is again");
+  await runTo(p1, c1, 60);
+  assert.equal(p1.snapshot().state, "running", "the pump ran again and the controller followed");
+  p1.pause();
+  await runTo(p1, c1, 70);
+  let snap = p1.snapshot();
+  assert.equal(snap.state, "paused", "the user's Pause holds while the pump reports itself running at 0");
+  assert.equal(snap.rate, 0);
+  assert.ok(!snap.notes.some((n) => n.time - T0 > 60 && /running again/.test(n.message)), "no un-pause the user did not ask for");
+  p1.resume();
+  await runTo(p1, c1, 80);
+  assert.equal(p1.snapshot().state, "running");
+
+  // Path 2: the user presses Pause while the pump is pump-paused; the pump
+  // then runs again on its own: the controller stays paused until Resume.
+  const c2 = fakeClock();
+  const d2 = new PausingPump({ syringeVolume: 50, concentration: 10, pauseAt: T0 + 20.3, unpauseAt: T0 + 30 });
+  const p2 = await startedPump(c2, { driver: d2 });
+  await runTo(p2, c2, 25);
+  p2.pause();
+  await runTo(p2, c2, 45);
+  snap = p2.snapshot();
+  assert.equal(snap.state, "paused", "the user's Pause over the pump's is the user's");
+  assert.equal(snap.rate, 0);
+  p2.resume();
+  await runTo(p2, c2, 50);
+  assert.equal(p2.snapshot().state, "running");
+  assert.ok(p2.snapshot().rate > 0, `running again after Resume (${p2.snapshot().rate} mL/hr)`);
+
+  // Path 3: an alarm while pump-paused, cleared by the user with the pump
+  // running again; a later user Pause holds.
+  const c3 = fakeClock();
+  class AlarmingPausingPump extends PausingPump {
+    _advance(to) { super._advance(to); if (this.alarmAt !== undefined && this.alarmAt !== null && to >= this.alarmAt) { this.alarms.push({ kind: "doorOpen", message: "door open", at: this.alarmAt }); this.alarmAt = null; } }
+    close() { this.alarms = []; this.state = "running"; }
+  }
+  const d3 = new AlarmingPausingPump({ syringeVolume: 50, concentration: 10, pauseAt: T0 + 20.3 });
+  d3.alarmAt = T0 + 30;
+  const p3 = await startedPump(c3, { driver: d3 });
+  await runTo(p3, c3, 35);
+  assert.equal(p3.snapshot().state, "alarm");
+  d3.close();
+  p3.setTarget(3);
+  await runTo(p3, c3, 120);
+  assert.equal(p3.snapshot().state, "running");
+  p3.pause();
+  await runTo(p3, c3, 140);
+  assert.equal(p3.snapshot().state, "paused", "the user's Pause holds after an alarm cleared an earlier pump pause");
+});
+
+test("mass a command's reading shows delivered reaches the truth", async () => {
+  // A driver answering from a background-updated cache can return a larger
+  // totaliser on the reading that acknowledges a command.
+  class JitterPump extends SimulatedPump {
+    infuse(time, rate) {
+      const r = super.infuse(time, rate);
+      if (rate !== null && rate !== undefined && this.state === "running") {
+        this.volumeInfused += 0.02;
+        this.massInfused += 0.02 * this.concentration;
+        this.syringeRemaining -= 0.02;
+        return this.reading();
+      }
+      return r;
+    }
+  }
+  const cr = fakeClock();
+  const ref = await startedPump(cr, {});
+  await runTo(ref, cr, 120);
+  const cj = fakeClock();
+  const jitter = await startedPump(cj, { driver: new JitterPump({ syringeVolume: 50, concentration: 10 }) });
+  await runTo(jitter, cj, 120);
+  const a = ref.snapshot();
+  const b = jitter.snapshot();
+  assert.ok(b.trueMassInfused > a.trueMassInfused + 0.5, `the extra mass is in the totals (${b.trueMassInfused} vs ${a.trueMassInfused} mg)`);
+  assert.ok(b.truth.cp > a.truth.cp + 1e-6, `and in the patient (${b.truth.cp} vs ${a.truth.cp})`);
+  assert.ok(Math.abs(b.predicted.cp - a.predicted.cp) < 1e-9, "the belief, which follows the commands, is unchanged");
+});
+
+test("a case that starts in alarm schedules no request", async () => {
+  class DeadPump extends SimulatedPump {
+    infuse() { throw new Error("no pump"); }
+    loadSyringe() { throw new Error("no pump"); }
+  }
+  const clock = fakeClock();
+  const pump = makePump(clock, { driver: new DeadPump({}), target: { site: "effect", value: 3 } });
+  clock.set(0);
+  pump.start();
+  await pump.idle();
+  await runTo(pump, clock, 5);
+  const snap = pump.snapshot();
+  assert.equal(snap.state, "alarm");
+  assert.equal(snap.alarmKind, "driverFault");
+  assert.equal(snap.nextRequestAt, null, "in alarm the controller waits");
+  assert.equal(snap.exchanges.length, 0);
+});
+
+test("a syringe change the driver did not take is sent again at its first reading, and said so", async () => {
+  class FlakyLoad extends SimulatedPump {
+    constructor(o) { super(o); this.loads = []; this.failLoads = false; }
+    loadSyringe(time, syringe) {
+      if (this.failLoads) throw new Error("pump busy");
+      this.loads.push({ ...syringe });
+      return super.loadSyringe(time, syringe);
+    }
+  }
+  const clock = fakeClock();
+  const driver = new FlakyLoad({ syringeVolume: 50, concentration: 10 });
+  const pump = await startedPump(clock, { driver });
+  await runTo(pump, clock, 30);
+  driver.failLoads = true;
+  pump.changeSyringe(10, 20, 30);
+  let snap = pump.snapshot();
+  assert.equal(snap.state, "alarm");
+  assert.equal(snap.alarmKind, "driverFault");
+  assert.ok(snap.notes.some((n) => /did not reach the pump/.test(n.message)));
+  assert.equal(driver.loads.length, 1);
+  driver.failLoads = false;
+  pump.setTarget(3);
+  await runTo(pump, clock, 40);
+  snap = pump.snapshot();
+  assert.equal(driver.loads.length, 2, "the change was sent again");
+  assert.deepEqual(driver.loads[1], { volume: 30, concentration: 20, units: "mg", drug: "propofol" });
+  assert.equal(driver.syringeVolume, 30);
+  assert.equal(driver.concentration, 20);
+  assert.ok(snap.notes.some((n) => /has reached the pump/.test(n.message)));
+  assert.equal(snap.state, "running");
+});
+
+test("a stop the controller commanded on an alarm, acknowledged late, is recorded as the pump's stop without an 'unasked' note", async () => {
+  class SlowAdvisoryPump extends SimulatedPump {
+    constructor(o) { super(o); this.alarmAt = o.alarmAt; }
+    _advance(to) {
+      super._advance(to);
+      if (this.alarmAt !== null && to >= this.alarmAt) {
+        this.alarms.push({ kind: "lowBattery", message: "battery low", at: this.alarmAt });
+        this.alarmAt = null;
+      }
+    }
+  }
+  const clock = fakeClock();
+  const driver = new SlowAdvisoryPump({ syringeVolume: 50, concentration: 10, acknowledgeDelay: 2, alarmAt: T0 + 20.3 });
+  const pump = await startedPump(clock, { driver });
+  await runTo(pump, clock, 40);
+  const snap = pump.snapshot();
+  assert.equal(snap.state, "alarm");
+  const stop = rateEvents(snap).pop();
+  assert.equal(stop.rate, 0);
+  assert.equal(stop.source, "pump");
+  assert.ok(Math.abs(stop.at - 22.5) < 1e-3, `recorded when the pump acknowledged the stop (${stop.at} s)`);
+  assert.ok(!snap.notes.some((n) => /did not command/.test(n.message)), "the stop was the controller's own");
+  assert.equal(driver.rate, 0);
+});
+
+test("a reading ahead of the controller's clock is noted once", async () => {
+  class AheadPump extends SimulatedPump {
+    reading() { const r = super.reading(); r.time = r.time + 5; return r; }
+  }
+  const clock = fakeClock();
+  const pump = await startedPump(clock, { driver: new AheadPump({ syringeVolume: 50, concentration: 10 }) });
+  await runTo(pump, clock, 30);
+  const notes = pump.snapshot().notes.filter((n) => /ahead of the controller's clock/.test(n.message));
+  assert.equal(notes.length, 1);
+  assert.match(notes[0].message, /5 s ahead/);
+  assert.equal(pump.snapshot().state, "running", "a note, not an alarm");
 });
