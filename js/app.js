@@ -451,6 +451,7 @@ function startCase(event) {
   let pump;
   try {
     pump = new FauxPump({
+      driver: pickDriver(settings),
       drug: settings.drug,
       patient: settings.patient,
       syringe: settings.syringe,
@@ -488,6 +489,15 @@ function startCase(event) {
   // the top of the window so the running pump is what the user sees.
   const screen = el.pumpScreen.getBoundingClientRect();
   if (screen.bottom > window.innerHeight || screen.top < 0) el.pumpScreen.scrollIntoView({ block: "start" });
+}
+
+// A real pump's driver, when the page was given one: window.FauxTCI.driver,
+// a PumpDriver instance (js/driver.js) or a function of the case settings
+// that returns one.  Without it FauxPump builds the SimulatedPump.
+function pickDriver(settings) {
+  const hook = typeof window !== "undefined" && window.FauxTCI ? window.FauxTCI.driver : null;
+  if (!hook) return undefined;
+  return typeof hook === "function" ? hook(settings) : hook;
 }
 
 function stopCase() {
@@ -613,7 +623,12 @@ function updateFace(snap) {
   const massUnits = snap.config.massUnits;
   const perKg = massUnits === "mg" ? base * 1000 / weight : base / weight;
   const massText = massUnits === "mg" ? `${sig(base * 60, 4)} mg/hr` : `${sig(base, 4)} mcg/min`;
-  el.massRate.textContent = `${massText} ${MIDDOT} ${sig(perKg, 3)} mcg/kg/min`;
+  // The pump's own word when it differs from the controller's: a command it
+  // has not yet acknowledged, or a state other than running.
+  let pumpText = "";
+  if (snap.pump && snap.pump.commanded) pumpText = ` ${MIDDOT} ${snap.pump.commanded.rate.toFixed(decimals)} commanded`;
+  else if (snap.pump && snap.pump.state !== "running") pumpText = ` ${MIDDOT} pump ${snap.pump.state}`;
+  el.massRate.textContent = `${massText} ${MIDDOT} ${sig(perKg, 3)} mcg/kg/min${pumpText}`;
 
   const lampState = snap.state === "running" && snap.rate === 0 && snap.phaseCode !== "loading" ? "running" : snap.state;
   el.lamp.dataset.state = snap.started ? lampState : "standby";
@@ -628,7 +643,10 @@ function updateFace(snap) {
 
   let alarmText = "";
   if (snap.state === "alarm" && snap.alarms.length) {
-    alarmText = `ALARM: ${snap.alarms[snap.alarms.length - 1].message}. Set a target or press Resume to restart.`;
+    const hint = snap.alarmKind === "syringeEmpty" ? "Change the syringe to continue."
+      : snap.alarmKind === "driverFault" ? "Check the pump link, then set a target to retry."
+        : "Set a target or press Resume to restart.";
+    alarmText = `ALARM: ${snap.alarms[snap.alarms.length - 1].message}. ${hint}`;
   }
   if (alarmText !== app.lastAlarm) {
     el.alarm.textContent = alarmText;
@@ -782,7 +800,7 @@ function updateWire(snap) {
 
 const OUTCOME_WORDS = Object.freeze({
   applied: "applied", pending: "pending", dropped: "dropped", "late-discarded": "late",
-  superseded: "superseded", error: "error", "no-response": "no response",
+  superseded: "superseded", error: "error", "no-response": "no response", refused: "refused",
 });
 
 const caseTime = (ms) => clockText((ms - app.caseStartMs) / 1000, true);

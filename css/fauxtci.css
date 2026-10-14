@@ -530,6 +530,7 @@ pre.json {
 .badge-superseded { background: var(--badge-superseded); }
 .badge-error { background: var(--badge-error); }
 .badge-no-response { background: var(--badge-error); }
+.badge-refused { background: var(--badge-error); }
 
 /* ------------------------------------------------------------------ about */
 

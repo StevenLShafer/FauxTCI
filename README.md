@@ -173,58 +173,101 @@ since the epoch:
 | Method | What it does |
 |---|---|
 | `infuse(time, rate)` | Run `rate` mL/hr from `time`; `rate` null changes nothing and just reads the pump. Returns a reading. |
-| `loadSyringe(time, { volume, concentration, units })` | A new syringe. Returns a reading. |
-| `horizon(time)` | When the pump will next change state by itself (a syringe about to run out, a command about to take effect), or null if it cannot predict. Optional. |
+| `loadSyringe(time, { volume, concentration, units, drug })` | A new syringe: `volume` in mL, `concentration` what is really in it, in the drug's base mass unit per mL, `units` that unit (`"mg"` or `"mcg"`), `drug` the drug's name. Called once at `start()` for the syringe the case begins with and again on every change. Returns a reading. |
+| `horizon(time)` | When the pump will next change state by itself (a syringe about to run out, a command about to take effect): a time strictly later than `time`, or null if it cannot predict. Optional; a time at or before `time` is ignored. |
+
+The calling convention: the three methods are **synchronous**. Each returns
+at once, from the driver's own cached status, and never throws. A real
+driver talks to its pump in the background (a serial port, Bluetooth, a
+socket), keeps the last status it received, issues each command when
+`infuse()` asks for it, and answers `infuse()` from what it has. The
+controller never calls the driver with a `time` earlier than a previous
+call's. A method that throws, or returns a Promise or anything but a
+reading, is a **driver fault**: the controller raises the alarm
+`driverFault`, stops asking the server, records nothing it has not seen,
+and keeps its own clock running; the first reading that arrives normally
+clears the fault (the alarm stays, as every alarm does, until the user
+clears it).
 
 A reading is the pump's own account of itself as of `time`:
 
 ```
-time              s, the instant the reading describes
-rate              mL/hr actually running
+time              s, the instant the reading describes (the time asked)
+rate              mL/hr actually running, 0 when stopped
 acknowledgedAt    s, when the rate running took effect
 commanded         { rate, at } a command not yet running, or null
-volumeInfused     mL delivered since the totaliser was reset (the pump's own counter)
-massInfused       drug delivered in massUnits (a drug totaliser), or null
-massUnits         "mg" or "mcg", or null
-syringeRemaining  mL left, or null if the pump cannot tell
+volumeInfused     mL, the pump's own volume totaliser (see below)
+massInfused       the drug totaliser in massUnits, or null if the pump has none
+massUnits         "mg" or "mcg" (converted to the drug's unit), or null for the drug's unit
+syringeRemaining  mL left, or null if the pump cannot tell (then derived)
 state             "running" | "stopped" | "paused"
-alarms            [{ kind, message, at }], e.g. { kind: "syringeEmpty", ... }
+alarms            [{ kind, message, at }]: conditions that stopped the pump
+notices           [{ kind, message, at }]: conditions that did not (optional)
 ```
 
-What the controller does with it: it never integrates the commanded rate
-itself. The true patient model is advanced with the mass the reading says
-was delivered; the request's `pump.volumeInfused` and
-`pump.syringeVolumeRemaining` are the reading's totaliser and syringe
-volume; a rate change goes into the delivery record only when a reading
-shows it running, at the reading's `acknowledgedAt` (a pump that
-acknowledges late is recorded late, which is the truth the server needs);
-a rate the pump reports that the controller did not command is recorded with
-source `pump`; and an alarm the pump reports stops the controller at the
-alarm's own time, with the rate 0 recorded then, the segment dropped and the
-alarm raised on the pump face. `syringeEmpty` is the kind the controller
-names; any other kind (`occlusion`, `doorOpen`, whatever the pump calls it)
-is raised as it comes. A cleared alarm that the pump still reports comes
-back at the next reading, so the controller cannot run a pump that will not.
+What the controller does with it:
+
+* **The truth follows the totaliser.** The controller never integrates the
+  commanded rate itself: the true patient model is advanced with the mass
+  the reading says was delivered (the drug totaliser, converted by
+  `massUnits`; or the volume at the syringe's true concentration when there
+  is none). The totaliser need not be 0 at the first call and may reset:
+  the controller counts from the first reading and takes a decrease as a
+  reset, so the request's `pump.volumeInfused` is always the volume since
+  the case started. A pump that cannot tell its syringe volume has it
+  derived: the loaded volume less the volume totalised since the load.
+* **The record follows the acknowledgement.** A rate change goes into the
+  delivery record only when a reading shows it running, at the reading's
+  `acknowledgedAt` (a pump that acknowledges late is recorded late, which is
+  the truth the server needs), never earlier than an event already
+  recorded. A running rate within the pump's rate resolution of the command
+  answers it and is recorded with the command's source and the pump's own
+  value; a rate the controller did not command is recorded with source
+  `pump`.
+* **An alarm stops the pump, for real.** An alarm means the pump has
+  stopped, or must: on the first reading that shows one the controller
+  commands rate 0, records the stop (at the alarm's own time when the pump
+  had stopped itself, at the stop command when it was still running), drops
+  its command segment and raises the alarm on the face. Two alarms at once are raised once each. The pump must keep
+  reporting the alarm until the condition is cleared on the pump; if the
+  user clears it first it comes back at the next reading, so the controller
+  cannot run a pump that will not. `syringeEmpty` and `occlusion` are the
+  kinds the API's `pump.state` names; any other kind (`doorOpen`, whatever
+  the pump calls it) is raised as it comes. A condition that does not stop
+  the pump (low battery, near end of infusion) belongs in `notices`: noted
+  on the face once, never acted on.
+* **The pump's state is honoured.** A pump paused from its own panel pauses
+  the controller (the plan is noted, not run, and the request says
+  `paused`); when the pump runs again the controller resumes and asks at
+  once. A pump that is `stopped` with no alarm is reported as `standby`.
+  The face shows the pump's own word next to the rate when it differs from
+  the controller's: a command not yet acknowledged, or a state other than
+  running.
 
 `SimulatedPump`, in the same file, is the pump FauxTCI runs: it delivers
 exactly the commanded rate, keeps a syringe of known volume and true
 concentration (the teaching control that tells the controller one
 concentration while the syringe holds another lives there), stops and alarms
-at the instant the syringe runs out, refuses to run until a new one is
-loaded, and can be given an acknowledgement delay. The page constructs it
-from the setup; the existing tests pin that it reproduces the pump's earlier
-behaviour exactly.
+at the instant the syringe runs out (decided by time, so that it empties at
+any clock and any rate), refuses to run until a new one is loaded, and can be
+given an acknowledgement delay. The page constructs it from the setup; the
+pump and closed-loop tests that pre-date the driver pass unchanged against
+it.
 
 To drive a real pump, subclass `PumpDriver`, speak the pump's protocol inside
-those three methods, and pass an instance to `FauxPump` as the `driver`
-option. `test/driver.test.js` shows the controller's side with four small
+those three methods, and hand an instance to the page as
+`window.FauxTCI.driver` before pressing Start (an instance, or a function of
+the case settings that returns one); in code, pass it to `FauxPump` as the
+`driver` option. `test/driver.test.js` shows the controller's side with small
 drivers: one that acknowledges two seconds late, one that delivers half of
-what it is told, one that occludes, and one that changes its own rate. What
-a real driver must still get right: times are seconds since the epoch on the
-controller's clock; rates are mL/hr; `volumeInfused` must be the pump's own
-totaliser, never a re-integration of the command; an alarm must carry the
-time it began; and a stopped pump must report `rate` 0 and keep reporting
-the alarm until the condition is cleared on the pump.
+what it is told, one that occludes, one that changes its own rate, one that
+refuses a command, one whose totaliser resets, one that pauses itself, one
+that echoes rates at float32 precision, and one that throws. What a real
+driver must get right: times are seconds since the epoch on the controller's
+clock; rates are mL/hr; `volumeInfused` is the pump's own totaliser, never a
+re-integration of the command; an alarm carries the time it began and is
+reported until the condition is cleared on the pump; a stopped pump reports
+`rate` 0; and the three methods answer at once and never throw.
 
 ## How it was validated
 
