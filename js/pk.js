@@ -3,16 +3,19 @@
 // Everything a TCI controller needs from the drug library, in one module and
 // in the order stanpumpR computes it:
 //
-//   1. the covariate models, propofol (Eleveld 2018, R/drugs_propofol.R) and
-//      remifentanil (Eleveld 2017 below BMI 30, Kim 2017 at or above,
-//      R/drugs_remifentanil.R), which turn weight, height, age and sex into
-//      v1, v2, v3, cl1, cl2, cl3;
+//   1. the covariate models, propofol (Eleveld 2018, R/drugs_propofol.R),
+//      remifentanil (Eleveld 2017, or Kim 2017 from a BMI of 30 in adults,
+//      R/drugs_remifentanil.R), sufentanil (Gepts 1995, R/drugs_sufentanil.R)
+//      and remimazolam (Eleveld 2025, R/drugs_remimazolam.R), the last two
+//      scaled to fat-free mass by pkSizeFactors() (R/pkSizeFactors.R), which
+//      turn weight, height, age and sex into v1, v2, v3, cl1, cl2, cl3;
 //   2. the micro rate constants and the three eigenvalues (cube(), R/cube.R);
 //   3. the plasma and effect-site bolus and infusion coefficients exactly as
 //      getDrugPK() builds them (R/getDrugPK.R);
-//   4. ke0 solved from the time to peak effect by the same nested Brent
-//      minimisation stats::optimize() runs in R (tPeakError() and CE() in
-//      R/getDrugPK.R; Brent_fmin() in R's src/library/stats/src/optimize.c);
+//   4. ke0 solved from the time to peak effect as ke0FromTPeakBolus() does it
+//      (uniroot() on effectSitePeakTime(), itself an optimize(); R_zeroin2()
+//      and Brent_fmin() in R's src/library/stats/src), or for a drug that
+//      supplies ke0 (remimazolam) the time to peak effect solved from it;
 //   5. the seven-amplitude closed-form recurrence of tciSchedule()'s
 //      advance() (R/tci.R), which is how the controller moves the model state
 //      through time.
@@ -44,7 +47,7 @@ export const COVARIATE_BOUNDS = Object.freeze({
 });
 
 /**
- * The library rows for the two drugs, copied from stanpumpR's
+ * The library rows for the four drugs, copied from stanpumpR's
  * inst/extdata/drugDefaults_global.csv (columns Concentration.Units,
  * Bolus.Units, Lower, Upper, Typical).  `concentrationUnits` is the CSV's
  * bare token ("mcg" or "ng"); baseUnits() turns it into the API's units.
@@ -56,16 +59,32 @@ export const DRUG_LIBRARY = Object.freeze({
   remifentanil: Object.freeze({
     concentrationUnits: "ng", bolusUnits: "mcg", lower: 0.8, upper: 2, typical: 1.2,
   }),
+  sufentanil: Object.freeze({
+    concentrationUnits: "ng", bolusUnits: "mcg", lower: 0.0448, upper: 0.112, typical: 0.0672,
+  }),
+  remimazolam: Object.freeze({
+    concentrationUnits: "mcg", bolusUnits: "mg", lower: 0.3, upper: 0.6, typical: 0.45,
+  }),
 });
 
 /** R's default optimize() tolerance: .Machine$double.eps^0.25 = 2^-13. */
 export const OPTIMIZE_TOL = Math.pow(Number.EPSILON, 0.25);
 
-/** The ke0 search interval of getDrugPK(): stats::optimize(tPeakError, c(0, 200), ...). */
-export const KE0_INTERVAL = Object.freeze([0, 200]);
+/** uniroot()'s tolerance in ke0FromTPeakBolus(): .Machine$double.eps^0.5. */
+export const UNIROOT_TOL = Math.sqrt(Number.EPSILON);
 
-/** The peak-time search interval of tPeakError(): stats::optimize(CE, c(0, 100), ...). */
-export const PEAK_INTERVAL = Object.freeze([0, 100]);
+/** uniroot()'s default maxiter. */
+export const UNIROOT_MAXITER = 1000;
+
+/** The ends of the ke0 bracket, per minute (KE0_SOLVE_MIN, KE0_SOLVE_MAX in R/getDrugPK.R). */
+export const KE0_SOLVE_MIN = 1e-12;
+export const KE0_SOLVE_MAX = 1e6;
+
+/** The longest time effectSitePeakTime() searches, in minutes (its `upper` default). */
+export const PEAK_SEARCH_MAX = 4000;
+
+/** The REMIFENTANIL_KIM_MIN_AGE of R/constants.R: Kim 2017 was fitted in adults. */
+export const REMIFENTANIL_KIM_MIN_AGE = 18;
 
 // ---------------------------------------------------------------------------
 // Covariates
@@ -207,122 +226,256 @@ export function propofol(weight, height, age, sex, adjustToFFM = true) {
   };
 }
 
+const REMIFENTANIL_ELEVELD_REFERENCE =
+  "Eleveld DJ et al., Anesthesiology 2017;126(6):1005-1018. https://pubmed.ncbi.nlm.nih.gov/28509794/";
+const REMIFENTANIL_KIM_REFERENCE =
+  "Kim TK et al., Anesthesiology 2017;126(6):1019-1032. https://pubmed.ncbi.nlm.nih.gov/28509796/";
+
 /**
- * Remifentanil: port of remifentanil() in R/drugs_remifentanil.R.  Eleveld
- * 2017 (Anesthesiology 126:1005-1018) below a BMI of 30, Kim 2017
- * (Anesthesiology 126:1019-1032) at or above it, with the citation set in
- * the branch so that the model block names the model actually computed.
- * Returns { PK, tPeak, reference, branch }; `adjustToFFM` is accepted and
- * ignored, as in the R (both models carry their own fat-free-mass covariate).
+ * Remifentanil: port of remifentanil() in R/drugs_remifentanil.R.  Kim 2017
+ * (Anesthesiology 126:1019-1032) at a BMI of 30 or more in a patient of
+ * REMIFENTANIL_KIM_MIN_AGE or older, unless Kim's model gives a non-positive
+ * parameter for the patient (its age terms are linear), in which case
+ * Eleveld 2017 (Anesthesiology 126:1005-1018) is used and the citation says
+ * why; Eleveld 2017 otherwise.  The citation is set in the branch so that the
+ * model block names the model actually computed.  Returns { PK, tPeak,
+ * reference, branch }; `adjustToFFM` is accepted and ignored, as in the R
+ * (both models carry their own fat-free-mass covariate).
  */
 export function remifentanil(weight, height, age, sex, adjustToFFM = true) {
-  const heightM = height / 100;
-  const BMI = weight / (heightM * heightM);
-  let v1; let v2; let v3; let cl1; let cl2; let cl3;
+  const BMI = weight / ((height / 100) * (height / 100)); // (height / 100)^2 is x * x in R_pow()
+  let useKim = BMI >= 30 && age >= REMIFENTANIL_KIM_MIN_AGE;
+  let kimUndefined = [];
+  let PK;
   let reference;
-  let branch;
-
-  if (BMI < 30) { // NIH obesity cutoff
-    // Eleveld 2017
-    const M1F2 = sex === SEX_MALE ? 1 : 2;
-
-    const THETA01 = 1.759110; // v1=5.81
-    const THETA02 = 2.177170; // v2=8.82
-    const THETA03 = 1.614450; // v3=5.03
-    const THETA04 = 0.946257; // cl=2.58
-    const THETA05 = 0.540315; // q2=1.72
-    const THETA06 = -2.083880; // q3=0.12
-    const THETA07 = 2.878980; // e50 for cl maturation
-    const THETA08 = -0.00554481; // aging v1/q2/q3
-    const THETA09 = -0.00326985; // aging v2/cl
-    const THETA10 = -0.0315135; // aging v3
-    const THETA11 = 0.4704050; // increase cl/q2/v2 in females 12-45 years
-    const THETA12 = -0.0260496; // weight correction v3
-
-    // maturation.  weight^2 is x * x in R_pow(), hence the multiplications.
-    const SE50 = THETA07;
-    const ADLT = (weight * weight) / ((weight * weight) + (SE50 * SE50));
-    const AREF = (70 * 70) / ((70 * 70) + (SE50 * SE50));
-    const KMAT = ADLT / AREF;
-
-    // scaling using Al-Sallami FFM
-    const HT2 = (height / 100) * (height / 100);
-    const MATM = 0.88 + ((1 - 0.88) / (1 + Math.pow(age / 13.4, -12.7)));
-    const MATF = 1.11 + ((1 - 1.11) / (1 + Math.pow(age / 7.1, -1.1)));
-    const FFMM = MATM * 42.92 * HT2 * weight / (30.93 * HT2 + weight);
-    const FFMF = MATF * 37.99 * HT2 * weight / (35.98 * HT2 + weight);
-    const FFMR = 42.92 * (1.7 * 1.7) * 70 / (30.93 * (1.7 * 1.7) + 70);
-
-    const MAL = 2 - M1F2;
-    const FEM = M1F2 - 1;
-    const bsize = (MAL * FFMM + FEM * FFMF) / FFMR;
-
-    // aging for v1/q2/q3, v3 and v2/cl
-    const kv1 = Math.exp(THETA08 * (age - 35));
-    const kv2 = Math.exp(THETA09 * (age - 35));
-    const kv3 = Math.exp(THETA10 * (age - 35));
-    const kcl = kv2;
-    const kcl2 = kv1;
-    const kcl3 = kv1;
-
-    // sex correction for cl, v2 and q2
-    const age6 = Math.pow(age, 6);
-    const PPUB = age6 / (age6 + Math.pow(12, 6));
-    const ELDY = age6 / (age6 + Math.pow(45, 6));
-    const ksex = 1 + (M1F2 - 1) * PPUB * (1 - ELDY) * THETA11;
-
-    // weight correction for v3
-    const Wv3 = Math.exp(THETA12 * (weight - 70));
-
-    // compartmental allometric scaling ((bsize)^1 is exact in both languages)
-    const M1 = bsize * kv1;
-    const M2 = bsize * kv2 * ksex;
-    const M3 = bsize * kv3 * Wv3;
-    v1 = Math.exp(THETA01) * M1;
-    v2 = Math.exp(THETA02) * M2;
-    v3 = Math.exp(THETA03) * M3;
-    const rv2 = Math.exp(THETA02);
-    const rv3 = Math.exp(THETA03);
-    const M4 = Math.pow(bsize, 0.75) * kcl * ksex * KMAT;
-    const M5 = Math.pow(v2 / rv2, 0.75) * kcl2 * ksex;
-    const M6 = Math.pow(v3 / rv3, 0.75) * kcl3;
-    cl1 = Math.exp(THETA04) * M4;
-    cl2 = Math.exp(THETA05) * M5;
-    cl3 = Math.exp(THETA06) * M6;
-
-    reference = "Eleveld DJ et al., Anesthesiology 2017;126(6):1005-1018. https://pubmed.ncbi.nlm.nih.gov/28509794/";
-    branch = "eleveld2017";
-  } else {
-    // Kim 2017, fat-free mass by Janmahasatian et al. (Clin Pharmacokinet
-    // 2005;44:1051-1065) with numerator and denominator divided by 1000, the
-    // denominator taking BMI, as the R has it.
-    let FFM;
-    if (sex === SEX_MALE) {
-      FFM = 9.27 * weight / (6.68 + 0.216 * BMI);
+  if (useKim) {
+    const kim = remifentanilKim(weight, height, age, sex);
+    const names = Object.keys(kim);
+    if (names.every((name) => kim[name] > 0)) {
+      PK = kim;
+      reference = REMIFENTANIL_KIM_REFERENCE;
     } else {
-      FFM = 9.27 * weight / (8.78 + 0.244 * BMI);
+      useKim = false;
+      kimUndefined = names.filter((name) => kim[name] <= 0);
     }
-    v1 = 4.76 * Math.pow(weight / 74.5, 0.658);
-    v2 = 8.4 * Math.pow(FFM / 52.3, 0.573) - 0.0936 * (age - 37);
-    v3 = 4 - 0.0477 * (age - 37);
-    cl1 = 2.77 * Math.pow(weight / 74.5, 0.336) - 0.0149 * (age - 37);
-    cl2 = 1.94 - 0.028 * (age - 37);
-    cl3 = 0.197;
-
-    reference = "Kim TK et al., Anesthesiology 2017;126(6):1019-1032. https://pubmed.ncbi.nlm.nih.gov/28509796/";
-    branch = "kim2017";
   }
+  if (!useKim) {
+    PK = remifentanilEleveld(weight, height, age, sex);
+    reference = REMIFENTANIL_ELEVELD_REFERENCE;
+    if (kimUndefined.length > 0) {
+      reference += ` (Kim's model for obesity gives a non-positive ${kimUndefined.map((n) => n.toUpperCase()).join(", ")}` +
+        " for this patient, so Eleveld's is used)";
+    }
+  }
+  return {
+    PK,
+    tPeak: 1.6, // as the R
+    reference,
+    branch: useKim ? "kim2017" : "eleveld2017",
+  };
+}
 
+/** Eleveld 2017's remifentanil: port of remifentanilEleveld() in R/drugs_remifentanil.R. */
+export function remifentanilEleveld(weight, height, age, sex) {
+  const M1F2 = sex === SEX_MALE ? 1 : 2;
+
+  const THETA01 = 1.759110; // v1=5.81
+  const THETA02 = 2.177170; // v2=8.82
+  const THETA03 = 1.614450; // v3=5.03
+  const THETA04 = 0.946257; // cl=2.58
+  const THETA05 = 0.540315; // q2=1.72
+  const THETA06 = -2.083880; // q3=0.12
+  const THETA07 = 2.878980; // e50 for cl maturation
+  const THETA08 = -0.00554481; // aging v1/q2/q3
+  const THETA09 = -0.00326985; // aging v2/cl
+  const THETA10 = -0.0315135; // aging v3
+  const THETA11 = 0.4704050; // increase cl/q2/v2 in females 12-45 years
+  const THETA12 = -0.0260496; // weight correction v3
+
+  // maturation.  weight^2 is x * x in R_pow(), hence the multiplications.
+  const SE50 = THETA07;
+  const ADLT = (weight * weight) / ((weight * weight) + (SE50 * SE50));
+  const AREF = (70 * 70) / ((70 * 70) + (SE50 * SE50));
+  const KMAT = ADLT / AREF;
+
+  // scaling using Al-Sallami FFM
+  const HT2 = (height / 100) * (height / 100);
+  const MATM = 0.88 + ((1 - 0.88) / (1 + Math.pow(age / 13.4, -12.7)));
+  const MATF = 1.11 + ((1 - 1.11) / (1 + Math.pow(age / 7.1, -1.1)));
+  const FFMM = MATM * 42.92 * HT2 * weight / (30.93 * HT2 + weight);
+  const FFMF = MATF * 37.99 * HT2 * weight / (35.98 * HT2 + weight);
+  const FFMR = 42.92 * (1.7 * 1.7) * 70 / (30.93 * (1.7 * 1.7) + 70);
+
+  const MAL = 2 - M1F2;
+  const FEM = M1F2 - 1;
+  const bsize = (MAL * FFMM + FEM * FFMF) / FFMR;
+
+  // aging for v1/q2/q3, v3 and v2/cl
+  const kv1 = Math.exp(THETA08 * (age - 35));
+  const kv2 = Math.exp(THETA09 * (age - 35));
+  const kv3 = Math.exp(THETA10 * (age - 35));
+  const kcl = kv2;
+  const kcl2 = kv1;
+  const kcl3 = kv1;
+
+  // sex correction for cl, v2 and q2
+  const age6 = Math.pow(age, 6);
+  const PPUB = age6 / (age6 + Math.pow(12, 6));
+  const ELDY = age6 / (age6 + Math.pow(45, 6));
+  const ksex = 1 + (M1F2 - 1) * PPUB * (1 - ELDY) * THETA11;
+
+  // weight correction for v3
+  const Wv3 = Math.exp(THETA12 * (weight - 70));
+
+  // compartmental allometric scaling ((bsize)^1 is exact in both languages)
+  const M1 = bsize * kv1;
+  const M2 = bsize * kv2 * ksex;
+  const M3 = bsize * kv3 * Wv3;
+  const v1 = Math.exp(THETA01) * M1;
+  const v2 = Math.exp(THETA02) * M2;
+  const v3 = Math.exp(THETA03) * M3;
+  const rv2 = Math.exp(THETA02);
+  const rv3 = Math.exp(THETA03);
+  const M4 = Math.pow(bsize, 0.75) * kcl * ksex * KMAT;
+  const M5 = Math.pow(v2 / rv2, 0.75) * kcl2 * ksex;
+  const M6 = Math.pow(v3 / rv3, 0.75) * kcl3;
+  const cl1 = Math.exp(THETA04) * M4;
+  const cl2 = Math.exp(THETA05) * M5;
+  const cl3 = Math.exp(THETA06) * M6;
+  return { v1, v2, v3, cl1, cl2, cl3 };
+}
+
+/**
+ * Kim 2017's remifentanil: port of remifentanilKim() in
+ * R/drugs_remifentanil.R.  Fat-free mass by Janmahasatian et al. (Clin
+ * Pharmacokinet 2005;44:1051-1065) with numerator and denominator divided by
+ * 1000, the denominator taking BMI, as the R has it.
+ */
+export function remifentanilKim(weight, height, age, sex) {
+  const BMI = weight / ((height / 100) * (height / 100));
+  let FFM;
+  if (sex === SEX_MALE) {
+    FFM = 9.27 * weight / (6.68 + 0.216 * BMI);
+  } else {
+    FFM = 9.27 * weight / (8.78 + 0.244 * BMI);
+  }
+  return {
+    v1: 4.76 * Math.pow(weight / 74.5, 0.658),
+    v2: 8.4 * Math.pow(FFM / 52.3, 0.573) - 0.0936 * (age - 37),
+    v3: 4 - 0.0477 * (age - 37),
+    cl1: 2.77 * Math.pow(weight / 74.5, 0.336) - 0.0149 * (age - 37),
+    cl2: 1.94 - 0.028 * (age - 37),
+    cl3: 0.197,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Size scaling (R/pkSizeFactors.R)
+
+/**
+ * Fat-free mass, Al-Sallami et al. 2015 (Clin Pharmacokinet 54:1169-1178):
+ * Janmahasatian's adult fat-free mass times a sex-specific maturation term.
+ * Port of ffmAlSallami().
+ */
+export function ffmAlSallami(weight, height, age, sex) {
+  const BMI = weight / ((height / 100) * (height / 100));
+  if (sex === SEX_MALE) {
+    const maturation = 0.88 + (1 - 0.88) / (1 + Math.pow(age / 13.4, -12.7));
+    return maturation * 9270 * weight / (6680 + 216 * BMI);
+  }
+  const maturation = 1.11 + (1 - 1.11) / (1 + Math.pow(age / 7.1, -1.1));
+  return maturation * 9270 * weight / (8780 + 244 * BMI);
+}
+
+/** The 70 kg, 170 cm, 35-year-old reference man every size-scaled model is anchored to. */
+export const FFM_REFERENCE_WEIGHT = 70;
+export const FFM_REFERENCE = ffmAlSallami(70, 170, 35, SEX_MALE); // 54.48 kg
+
+/**
+ * The multipliers a drug model applies to its reference (70 kg) volumes and
+ * clearances: port of pkSizeFactors().  With adjustToFFM the volume factor
+ * is the patient's fat-free mass over the reference man's and the clearance
+ * factor that ratio ^ 0.75; without it, the model's own legacy factors
+ * (`legacyVolume` defaults to weight / 70, `legacyClearance` to legacyVolume).
+ */
+export function pkSizeFactors(weight, height, age, sex, adjustToFFM = true,
+  legacyVolume = weight / FFM_REFERENCE_WEIGHT, legacyClearance = legacyVolume) {
+  const ffm = ffmAlSallami(weight, height, age, sex);
+  let volume;
+  let clearance;
+  if (adjustToFFM === true) {
+    volume = ffm / FFM_REFERENCE;
+    clearance = Math.pow(volume, 0.75);
+  } else {
+    volume = legacyVolume;
+    clearance = legacyClearance;
+  }
+  return { volume, clearance, ffm, ffmReference: FFM_REFERENCE, pkWeight: FFM_REFERENCE_WEIGHT * ffm / FFM_REFERENCE };
+}
+
+/**
+ * Sufentanil, Gepts 1995 (Anesthesiology 83:1194-1204), Table 3's two-stage
+ * means: port of sufentanil() in R/drugs_sufentanil.R.  The 70 kg parameters
+ * are scaled by pkSizeFactors(); with adjustToFFM false the published
+ * parameters are used unscaled (legacyVolume 1).  tPeak 5.6 min (Shafer and
+ * Varvel 1991, EEG).
+ */
+export function sufentanil(weight, height, age, sex, adjustToFFM = true) {
+  const size = pkSizeFactors(weight, height, age, sex, adjustToFFM, 1);
+  return {
+    PK: {
+      v1: 14.3 * size.volume,
+      v2: 63.1 * size.volume,
+      v3: 261.6 * size.volume,
+      cl1: 0.92 * size.clearance,
+      cl2: 1.55 * size.clearance,
+      cl3: 0.33 * size.clearance,
+    },
+    tPeak: 5.6,
+    reference: "Gepts E et al., Anesthesiology 1995;83(6):1194-1204. https://pubmed.ncbi.nlm.nih.gov/8533912/",
+    branch: "gepts1995",
+  };
+}
+
+/**
+ * Remimazolam, Eleveld 2025 (Br J Anaesth 135:206-217): port of
+ * remimazolam() in R/drugs_remimazolam.R.  Volumes scale with
+ * pkSizeFactors() (legacy: weight / 70, clearances (weight / 70)^0.75), V3
+ * with age and sex, CL1 with sex; the Pugh-Child and opioid terms are not
+ * applied, as in the R.  The model supplies ke0 itself, the published MOAA/S
+ * equilibration exp(-1.20976) = 0.2983 /min, and no tPeak: the time to peak
+ * effect is solved from it (about 2.4 min for the reference adult).
+ */
+export function remimazolam(weight, height, age, sex, adjustToFFM = true) {
+  const size = pkSizeFactors(weight, height, age, sex, adjustToFFM, undefined, Math.pow(weight / 70, 0.75));
+  const Fsize = size.volume;
+  const Kv3_age = 7.31;
+  const Kcl1_sex = 16.3;
+  const Kv3_sex = 28.7;
+  const Fv3_age = Math.exp(Kv3_age / 1000 * (age - 35));
+  let Fcl1_sex = 1;
+  let Fv3_sex = 1;
+  if (sex === SEX_FEMALE) {
+    Fcl1_sex = Math.exp(Kcl1_sex / 100);
+    Fv3_sex = Math.exp(Kv3_sex / 100);
+  }
+  const v1 = 4.31 * Fsize;
+  const v2 = 12.3 * Fsize;
+  const v3 = 18.6 * Fsize * Fv3_age * Fv3_sex;
+  const cl1 = 1.12 * size.clearance * Fcl1_sex;
+  const cl2 = 1.45 * Math.pow(v2 / 12.3, 0.75);
+  const cl3 = 0.298 * Math.pow(v3 / 18.6, 0.75);
   return {
     PK: { v1, v2, v3, cl1, cl2, cl3 },
-    tPeak: 1.6, // Opioid simulation spreadsheet, as the R
-    reference,
-    branch,
+    ke0: Math.exp(-1.20976),
+    tPeak: null,
+    reference: "Eleveld DJ et al., Br J Anaesth 2025;135(1):206-217. https://pubmed.ncbi.nlm.nih.gov/40312166/",
+    branch: "eleveld2025",
   };
 }
 
 /** The drug functions by API name; anything not listed here is not a FauxTCI drug. */
-export const DRUG_FUNCTIONS = Object.freeze({ propofol, remifentanil });
+export const DRUG_FUNCTIONS = Object.freeze({ propofol, remifentanil, sufentanil, remimazolam });
 
 // ---------------------------------------------------------------------------
 // Eigenvalues
@@ -473,7 +626,137 @@ export function brentFmin(f, ax, bx, tol = OPTIMIZE_TOL) {
 }
 
 // ---------------------------------------------------------------------------
-// ke0 from the time to peak effect
+// R's sum() and uniroot()
+
+// A double as an exact binary fraction m * 2^e (m a BigInt, signed).
+const F64 = new DataView(new ArrayBuffer(8));
+function toBinary(x) {
+  F64.setFloat64(0, x);
+  const hi = F64.getUint32(0);
+  const lo = F64.getUint32(4);
+  const sign = hi >>> 31 ? -1n : 1n;
+  const biased = (hi >>> 20) & 0x7ff;
+  let m = (BigInt(hi & 0xfffff) << 32n) | BigInt(lo);
+  let e;
+  if (biased === 0) { e = -1074; } else { m |= 1n << 52n; e = biased - 1075; }
+  return { m: sign * m, e };
+}
+
+// Round m * 2^e to `bits` significant bits, to nearest, ties to even.
+function roundBinary({ m, e }, bits) {
+  if (m === 0n) return { m, e };
+  const sign = m < 0n ? -1n : 1n;
+  let a = m < 0n ? -m : m;
+  const length = a.toString(2).length;
+  if (length <= bits) return { m, e };
+  const shift = BigInt(length - bits);
+  const q = a >> shift;
+  const r = a & ((1n << shift) - 1n);
+  const half = 1n << (shift - 1n);
+  a = (r > half || (r === half && (q & 1n) === 1n)) ? q + 1n : q;
+  return { m: sign * a, e: e + Number(shift) };
+}
+
+function addBinary(x, y) {
+  if (x.m === 0n) return y;
+  if (y.m === 0n) return x;
+  const e = Math.min(x.e, y.e);
+  return { m: (x.m << BigInt(x.e - e)) + (y.m << BigInt(y.e - e)), e };
+}
+
+/**
+ * A sum as R's sum() gives it.  R adds a double vector term by term in a long
+ * double (on x86-64 the x87 80-bit format, a 64-bit significand) and rounds
+ * the total to a double once.  Where the terms nearly cancel, as the
+ * effect-site curve's do near its start, that is neither a left-to-right
+ * double sum nor the correctly rounded one, and Brent's search turns the
+ * difference into a different iterate.  So the accumulator is carried here
+ * exactly, as a binary fraction, and rounded to 64 significant bits after
+ * every addition and to 53 at the end, which is the x87's arithmetic.
+ */
+export function sumR(values) {
+  let acc = { m: 0n, e: 0 };
+  for (const x of values) {
+    if (!Number.isFinite(x)) return values.reduce((s, v) => s + v, 0); // R: Inf/NaN propagate
+    if (x === 0) continue;
+    acc = roundBinary(addBinary(acc, toBinary(x)), 64);
+  }
+  if (acc.m === 0n) return 0;
+  const d = roundBinary(acc, 53);
+  return Number(d.m) * Math.pow(2, d.e);
+}
+
+/**
+ * Brent's root finder on [ax, bx] given f(ax) and f(bx): a line-for-line port
+ * of R_zeroin2() in R's src/library/stats/src/zeroin.c, which is what
+ * stats::uniroot() calls.  As uniroot()'s wrapper does, a non-finite f value
+ * becomes the largest double of its sign (NaN as positive).  Returns the root
+ * (uniroot()'s $root).
+ */
+export function zeroin2(f, ax, bx, fa, fb, tol, maxit = UNIROOT_MAXITER) {
+  const fcn = (x) => {
+    const value = f(x);
+    if (Number.isFinite(value)) return value;
+    return value === -Infinity ? -Number.MAX_VALUE : Number.MAX_VALUE;
+  };
+  let a = ax;
+  let b = bx;
+  let c = a;
+  let fc = fa;
+  if (fa === 0) return a;
+  if (fb === 0) return b;
+  let iterations = maxit + 1;
+  while (iterations-- > 0) {
+    const prevStep = b - a;
+    if (Math.abs(fc) < Math.abs(fb)) {
+      a = b; b = c; c = a;
+      fa = fb; fb = fc; fc = fa;
+    }
+    const tolAct = 2 * Number.EPSILON * Math.abs(b) + tol / 2;
+    let newStep = (c - b) / 2;
+    if (Math.abs(newStep) <= tolAct || fb === 0) return b;
+    if (Math.abs(prevStep) >= tolAct && Math.abs(fa) > Math.abs(fb)) {
+      let p;
+      let q;
+      const cb = c - b;
+      if (a === c) {
+        const t1 = fb / fa;
+        p = cb * t1;
+        q = 1.0 - t1;
+      } else {
+        q = fa / fc;
+        const t1 = fb / fc;
+        const t2 = fb / fa;
+        p = t2 * (cb * q * (q - t1) - (b - a) * (t1 - 1.0));
+        q = (q - 1.0) * (t1 - 1.0) * (t2 - 1.0);
+      }
+      if (p > 0) q = -q; else p = -p;
+      if (p < (0.75 * cb * q - Math.abs(tolAct * q) / 2) && p < Math.abs(prevStep * q / 2)) newStep = p / q;
+    }
+    if (Math.abs(newStep) < tolAct) newStep = newStep > 0 ? tolAct : -tolAct;
+    a = b; fa = fb;
+    b += newStep; fb = fcn(b);
+    if ((fb > 0 && fc > 0) || (fb < 0 && fc < 0)) { c = a; fc = fa; }
+  }
+  return b; // did not converge, as R's returns its last iterate
+}
+
+/**
+ * stats::uniroot(f, c(lower, upper), tol = tol)$root: f at both ends (an
+ * error if they share a sign, as R's), then zeroin2().
+ */
+export function uniroot(f, lower, upper, tol = OPTIMIZE_TOL, maxit = UNIROOT_MAXITER) {
+  if (!(lower < upper)) throw new Error("uniroot: lower < upper is not fulfilled");
+  const fLower = f(lower);
+  const fUpper = f(upper);
+  if (Number.isNaN(fLower) || Number.isNaN(fUpper)) throw new Error("uniroot: f() is NA at an end point");
+  const clamp = (v) => Math.max(Math.min(v, Number.MAX_VALUE), -Number.MAX_VALUE);
+  if (clamp(fLower) * clamp(fUpper) > 0) throw new Error("uniroot: f() values at end points not of opposite sign");
+  return zeroin2(f, lower, upper, fLower, fUpper, tol, maxit);
+}
+
+// ---------------------------------------------------------------------------
+// ke0 and the time to peak effect
 
 /**
  * The effect-site concentration after a unit IV bolus at time t (minutes)
@@ -487,54 +770,77 @@ export function CE(t, e1, e2, e3, e4, lambda1, lambda2, lambda3, lambda4) {
 }
 
 /**
- * The squared miss between the wanted time to peak effect and the peak time
- * of the unit-bolus effect-site curve for a trial ke0 (`lambda4`): port of
- * tPeakError() in R/getDrugPK.R, inner stats::optimize(CE, c(0, 100), ...,
- * maximum = TRUE) included, which here is brentFmin() on -CE with R's
- * default tolerance.  `p1..p3` are the plasma bolus coefficients and
- * `lambda1..3` the eigenvalues.
+ * A rate constant nudged off any of `others` it ties with: port of
+ * separateEigenvalues() in R/metaboliteCoefficients.R for one rate.  A tie is
+ * |rate - other| < 1e-10 max(rate, other), and the nudge a relative 1e-8, far
+ * below any published parameter's precision; zeros are left alone.
  */
-export function tPeakError(lambda4, tPeak, p1, p2, p3, lambda1, lambda2, lambda3) {
-  const e1 = p1 / (lambda4 - lambda1) * lambda4;
-  const e2 = lambda2 > 0 ? p2 / (lambda4 - lambda2) * lambda4 : 0;
-  const e3 = lambda3 > 0 ? p3 / (lambda4 - lambda3) * lambda4 : 0;
-  const e4 = -e1 - e2 - e3;
-  const predPeak = brentFmin(
-    (t) => -CE(t, e1, e2, e3, e4, lambda1, lambda2, lambda3, lambda4),
-    PEAK_INTERVAL[0], PEAK_INTERVAL[1], OPTIMIZE_TOL);
-  const miss = tPeak - predPeak;
-  return miss * miss; // (tPeak - predPeak)^2, which R_pow() evaluates as x * x
+export function separateEigenvalues(rate, others) {
+  if (Number.isNaN(rate) || rate <= 0) return rate;
+  let value = rate;
+  for (const other of others) {
+    if (Number.isNaN(other) || !(other > 0)) continue;
+    if (Math.abs(value - other) < 1e-10 * Math.max(value, other)) value *= (1 + 1e-8);
+  }
+  return value;
 }
 
 /**
- * The peak time of the unit-bolus effect-site curve for a given ke0, as the
- * inner optimizer of tPeakError() finds it (useful for the round trip the
- * fixtures record).  Same arguments as tPeakError() without tPeak.
+ * The time of the peak effect-site concentration after a unit IV bolus: port
+ * of effectSitePeakTime() in R/getDrugPK.R.  The plasma curve is the bolus
+ * response sum coef_i exp(-lambda_i t) over the positive lambdas; the effect
+ * site is sum e_i exp(-lambda_i t) - sum(e) exp(-ke0 t) with
+ * e_i = coef_i ke0 / (ke0 - lambda_i), maximised by Brent's fmin on
+ * [0, min(4000, 20 / slowest rate)] with R's default tolerance.  Returns
+ * { time, window }.
  */
-export function peakTimeForKe0(ke0, p1, p2, p3, lambda1, lambda2, lambda3) {
-  const e1 = p1 / (ke0 - lambda1) * ke0;
-  const e2 = lambda2 > 0 ? p2 / (ke0 - lambda2) * ke0 : 0;
-  const e3 = lambda3 > 0 ? p3 / (ke0 - lambda3) * ke0 : 0;
-  const e4 = -e1 - e2 - e3;
-  return brentFmin(
-    (t) => -CE(t, e1, e2, e3, e4, lambda1, lambda2, lambda3, ke0),
-    PEAK_INTERVAL[0], PEAK_INTERVAL[1], OPTIMIZE_TOL);
+export function effectSitePeak(coef, lambda, ke0, upper = PEAK_SEARCH_MAX) {
+  const c = [];
+  const l = [];
+  lambda.forEach((value, i) => { if (value > 0) { c.push(coef[i]); l.push(value); } });
+  const k = separateEigenvalues(ke0, l);
+  const e = c.map((ci, i) => ci * k / (k - l[i]));
+  const window = Math.min(upper, 20 / Math.min(...l, k));
+  const sumE = sumR(e);
+  const curve = (t) => sumR(e.map((ei, i) => ei * Math.exp(-l[i] * t))) - sumE * Math.exp(-k * t);
+  const time = brentFmin((t) => -curve(t), 0, window, OPTIMIZE_TOL);
+  return { time, window };
+}
+
+/** effectSitePeakTime(): the peak time alone. */
+export function effectSitePeakTime(coef, lambda, ke0, upper = PEAK_SEARCH_MAX) {
+  return effectSitePeak(coef, lambda, ke0, upper).time;
 }
 
 /**
- * ke0 from the time to peak effect after an IV bolus: the solve getDrugPK()
- * runs for an IV drug,
- *   stats::optimize(tPeakError, c(0, 200), tPeak, p1, p2, p3, l1, l2, l3)$minimum,
- * i.e. Brent's fmin on [0, 200] /min with R's default tolerance over the
- * nested objective tPeakError().  `pbolus` is [p1, p2, p3], `lambda` is
- * [lambda_1, lambda_2, lambda_3].
+ * The bracket ke0FromTPeakBolus() searches: lo from 1e-3 down by tens while
+ * the effect site there still peaks before tPeak, hi from 1 up by tens while
+ * it still peaks after.  Returns { lower, upper }.
  */
-export function ke0FromTPeak(tPeak, pbolus, lambda) {
-  const [p1, p2, p3] = pbolus;
-  const [l1, l2, l3] = lambda;
-  return brentFmin(
-    (ke0) => tPeakError(ke0, tPeak, p1, p2, p3, l1, l2, l3),
-    KE0_INTERVAL[0], KE0_INTERVAL[1], OPTIMIZE_TOL);
+export function ke0Bracket(tPeak, coef, lambda) {
+  const peakAt = (z) => effectSitePeakTime(coef, lambda, z);
+  let lo = 1e-3;
+  let hi = 1;
+  while (peakAt(lo) < tPeak && lo > KE0_SOLVE_MIN) lo /= 10;
+  while (peakAt(hi) > tPeak && hi < KE0_SOLVE_MAX) hi *= 10;
+  return { lower: lo, upper: hi };
+}
+
+/**
+ * ke0 from the time to peak effect after an IV bolus: port of
+ * ke0FromTPeakBolus() in R/getDrugPK.R.  The peak time falls monotonically
+ * as ke0 rises, so the root of effectSitePeakTime(ke0) - tPeak is bracketed
+ * (ke0Bracket()) and found with uniroot() at tol sqrt(eps).  A tPeak outside
+ * the bracket gets the bracket's nearer end, as in the R.  `coef` are the
+ * plasma bolus coefficients and `lambda` the eigenvalues; this is ke0 BEFORE
+ * getDrugPK() runs it through separateEigenvalues().
+ */
+export function ke0FromTPeakBolus(tPeak, coef, lambda) {
+  const peakAt = (z) => effectSitePeakTime(coef, lambda, z);
+  const { lower, upper } = ke0Bracket(tPeak, coef, lambda);
+  if (peakAt(lower) < tPeak) return lower;
+  if (peakAt(upper) > tPeak) return upper;
+  return uniroot((z) => peakAt(z) - tPeak, lower, upper, UNIROOT_TOL);
 }
 
 // ---------------------------------------------------------------------------
@@ -544,16 +850,20 @@ export function ke0FromTPeak(tPeak, pbolus, lambda) {
  * From the six disposition parameters to the complete IV parameter set the
  * controller needs: the micro rate constants, the eigenvalues, the plasma and
  * effect-site bolus and infusion coefficients and ke0.  A port of the
- * coefficient block of getDrugPK() in R/getDrugPK.R for an IV drug.  Pass
- * `ke0` to inject a known value (the fixtures' R value, or a drug's own
- * X$ke0) in place of the solve, which is how the coefficient arithmetic is
- * validated independently of the optimizer.
+ * coefficient block of getDrugPK() in R/getDrugPK.R for an IV drug.  ke0 is
+ * solved from `tPeak` (ke0FromTPeakBolus()), or is `modelKe0` when the drug
+ * function supplies one (remimazolam), and either is then nudged off the
+ * eigenvalues (separateEigenvalues()); a `tPeak` of null with a ke0 is solved
+ * as effectSitePeakTime() at that ke0, as getDrugPK() does for a model that
+ * leaves tPeak out.  Pass `ke0` to inject a known value (the fixtures' R
+ * value, already nudged) in place of the solve, which is how the coefficient
+ * arithmetic is validated independently of the root finder.
  *
  * Returns { params, coef: {pbolus, pinf, ebolus, einf}, lambda3, lambda4 }
  * with params = {v1, v2, v3, cl1, cl2, cl3, k10, k12, k13, k21, k31,
  * lambda_1, lambda_2, lambda_3, ke0, tPeak}.
  */
-export function buildKinetics(PK, tPeak, ke0 = null) {
+export function buildKinetics(PK, tPeak, ke0 = null, modelKe0 = null) {
   const { v1, v2, v3, cl1, cl2, cl3 } = PK;
   for (const [name, value] of Object.entries({ v1, v2, v3, cl1, cl2, cl3 })) {
     if (typeof value !== "number" || !Number.isFinite(value)) {
@@ -610,20 +920,28 @@ export function buildKinetics(PK, tPeak, ke0 = null) {
   if (lambda_2 > 0) p_coef_infusion_l2 = p_coef_bolus_l2 / lambda_2;
   if (lambda_3 > 0) p_coef_infusion_l3 = p_coef_bolus_l3 / lambda_3;
 
-  // find ke0 from tPeak: for these IV drugs the peak is measured against the
-  // IV bolus response, so the solve runs on the bolus coefficients.
+  // ke0, as getDrugPK() finds it for an IV drug: injected, the model's own,
+  // or solved from tPeak against the IV bolus response; then off the
+  // eigenvalues.
+  const lambdas = [lambda_1, lambda_2, lambda_3];
+  const pbolusVector = [p_coef_bolus_l1, p_coef_bolus_l2, p_coef_bolus_l3];
   let ke0Value;
   if (ke0 !== null && ke0 !== undefined) {
     if (typeof ke0 !== "number" || !Number.isFinite(ke0) || ke0 <= 0) {
       throw new Error("buildKinetics: an injected ke0 must be a positive finite number");
     }
     ke0Value = ke0;
+  } else if (typeof modelKe0 === "number" && modelKe0 > 0) {
+    ke0Value = separateEigenvalues(modelKe0, lambdas);
   } else if (tPeak > 0) {
-    ke0Value = ke0FromTPeak(tPeak,
-      [p_coef_bolus_l1, p_coef_bolus_l2, p_coef_bolus_l3],
-      [lambda_1, lambda_2, lambda_3]);
+    ke0Value = separateEigenvalues(ke0FromTPeakBolus(tPeak, pbolusVector, lambdas), lambdas);
   } else {
     ke0Value = 0;
+  }
+  // A model that gives ke0 and no tPeak: the effect site's own peak.
+  let tPeakValue = tPeak;
+  if ((tPeak === null || tPeak === undefined) && ke0Value > 0) {
+    tPeakValue = effectSitePeakTime(pbolusVector, lambdas, ke0Value);
   }
 
   if (ke0Value > 0) {
@@ -648,7 +966,7 @@ export function buildKinetics(PK, tPeak, ke0 = null) {
       k10, k12, k13, k21, k31,
       lambda_1, lambda_2, lambda_3,
       ke0: ke0Value,
-      tPeak: ke0Value > 0 ? tPeak : 0, // tciKinetics(): tPeak is 0 without an effect site
+      tPeak: ke0Value > 0 ? tPeakValue : 0, // tciKinetics(): tPeak is 0 without an effect site
     },
     // The layout of tciKinetics() in R/tci.R.
     coef: {
@@ -681,7 +999,7 @@ export function baseUnits(concentrationUnitsToken) {
 /**
  * Resolve the complete model for one drug in one patient: the covariate
  * model, the eigenvalues, the coefficients and ke0 (getDrugPK() followed by
- * tciKinetics() in stanpumpR).  Only "propofol" and "remifentanil" are known;
+ * tciKinetics() in stanpumpR).  Only the drugs of DRUG_FUNCTIONS are known;
  * anything else throws, as do covariates outside the API's bounds.  The
  * optional `ke0` injects a known value in place of the solve (validation
  * only).  Returns
@@ -692,13 +1010,13 @@ export function resolveModel({ drug, weight, height, age, sex, adjustToFFM = tru
   const drugFunction = Object.prototype.hasOwnProperty.call(DRUG_FUNCTIONS, drug)
     ? DRUG_FUNCTIONS[drug] : null;
   if (!drugFunction) {
-    throw new Error(`unknown drug ${JSON.stringify(drug)}: FauxTCI knows propofol and remifentanil`);
+    throw new Error(`unknown drug ${JSON.stringify(drug)}: FauxTCI knows ${Object.keys(DRUG_FUNCTIONS).join(", ")}`);
   }
   validateCovariates({ weight, height, age, sex });
   const adjust = adjustToFFM !== false;
 
   const model = drugFunction(weight, height, age, sex, adjust);
-  const kinetics = buildKinetics(model.PK, model.tPeak, ke0);
+  const kinetics = buildKinetics(model.PK, model.tPeak, ke0, model.ke0 ?? null);
   const row = DRUG_LIBRARY[drug];
   const units = baseUnits(row.concentrationUnits);
 

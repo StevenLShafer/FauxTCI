@@ -56,7 +56,7 @@ import { md5 } from "./md5.js";
 // here changes meaning: a token, a drug or a bound may only be added.
 
 /** This port's own version, reported in `server.version`. */
-export const FAUXTCI_VERSION = "0.3.0";
+export const FAUXTCI_VERSION = "0.4.0";
 
 const RATE_UNITS = Object.freeze(["mL/hr", "mg/hr", "mg/min", "mcg/hr", "mcg/min",
   "mg/kg/hr", "mg/kg/min", "mcg/kg/hr", "mcg/kg/min"]);
@@ -88,7 +88,7 @@ export const TCI_API = Object.freeze({
   VERSION: "1.0",
   PACKAGE: "FauxTCI",
   PACKAGE_VERSION: FAUXTCI_VERSION,
-  DRUGS: Object.freeze(["propofol", "remifentanil"]),
+  DRUGS: Object.freeze(["propofol", "remifentanil", "sufentanil", "remimazolam"]),
   MIN_INTERVAL: 1, // s: the controller's update interval, the time a rate is held
   MAX_INTERVAL: 60, // s; above tPeak / 3 for the drug the response warns INTERVAL_LONG
   MAX_HISTORY: 20000, // events in one request; longer is 413 HISTORY_TOO_LONG
@@ -122,34 +122,78 @@ export const TCI_API = Object.freeze({
   }),
 });
 
-// The stanpumpR library at the fixtures' commit (inst/extdata/drugDefaults_global.csv,
-// column Drug), so that an unknown name is 404 UNKNOWN_DRUG and a library drug
-// without a TCI in FauxTCI is 422 DRUG_NOT_TCI, as tciApiCheckDrug() answers.
+// The stanpumpR library at the fixtures' commit (getDrugDefaultsGlobal()$Drug,
+// from inst/extdata/drugDefaults_global.csv; 331 names), so that an unknown
+// name is 404 UNKNOWN_DRUG and a library drug without a TCI in FauxTCI is 422
+// DRUG_NOT_TCI, as tciApiCheckDrug() answers.  Regenerate both lists with
+// test/fixtures/generate.R's commit when the fixtures are regenerated.
 const STANPUMPR_LIBRARY_DRUGS = Object.freeze([
   "propofol", "remifentanil", "fentanyl", "alfentanil", "sufentanil", "morphine", "pethidine",
-  "hydromorphone", "methadone", "ketamine", "dexmedetomidine", "midazolam", "etomidate", "lidocaine",
-  "bupivacaine", "ropivacaine", "mepivacaine", "rocuronium", "naloxone", "oxytocin", "oxycodone",
-  "oliceridine", "remimazolam", "diazepam", "lorazepam", "alprazolam", "clonazepam", "zolpidem",
-  "temazepam", "codeine", "hydrocodone", "oxymorphone", "buprenorphine", "tramadol", "desmetramadol",
-  "gabapentin", "pregabalin", "acetaminophen", "ibuprofen", "diclofenac", "diclofenacEC", "meloxicam",
-  "ketorolac", "naproxen", "celecoxib", "aspirin", "salicylate", "cefazolin", "clindamycin", "cefalexin",
-  "ceftriaxone", "vancomycin", "metronidazole", "gentamicin", "hydrocortisone", "methylprednisolone",
-  "dexamethasone", "prednisolone", "prednisone", "sugammadex", "neostigmine", "glycopyrrolate",
-  "mannitol", "amiodarone", "desethylamiodarone", "amiodaroneIV", "escitalopram", "citalopram",
-  "sertraline", "paroxetine", "duloxetine", "mirtazapine", "bupropion", "hydroxybupropion",
-  "fluoxetine", "norfluoxetine", "venlafaxine", "desvenlafaxine", "methylphenidate",
-  "methylphenidatePediatric", "lisdexamfetamine", "mixedAmphetamineSalts", "ondansetron",
-  "aprepitant", "fosaprepitant", "quetiapine", "risperidone", "hydroxyrisperidone", "aripiprazole",
-  "dehydroaripiprazole", "olanzapine", "haloperidol", "haloperidolIV", "droperidol", "droperidolIM",
-  "air", "oxygen", "nitrousOxide", "sevoflurane", "isoflurane", "desflurane", "ventilation",
-  "phenytoin", "carbamazepine", "valproate", "phenobarbital", "pentobarbital", "ethosuximide",
-  "topiramate", "lacosamide", "lamotrigine", "zonisamide", "tiagabine", "levetiracetam",
-  "eslicarbazepine", "diamorphine",
+  "hydromorphone", "methadone", "ketamine", "dexmedetomidine", "midazolam", "etomidate",
+  "lidocaine", "bupivacaine", "ropivacaine", "mepivacaine", "rocuronium", "vecuronium",
+  "cisatracurium", "naloxone", "oxytocin", "oxycodone", "oliceridine", "remimazolam", "diazepam",
+  "lorazepam", "alprazolam", "clonazepam", "zolpidem", "temazepam", "codeine", "hydrocodone",
+  "oxymorphone", "buprenorphine", "tramadol", "desmetramadol", "gabapentin", "pregabalin",
+  "acetaminophen", "ibuprofen", "diclofenac", "diclofenacEC", "meloxicam", "ketorolac", "naproxen",
+  "celecoxib", "suzetrigine", "M6SUZ", "aspirin", "salicylate", "cefazolin", "clindamycin",
+  "cefalexin", "ceftriaxone", "vancomycin", "vancomycinKidneyTransplant", "metronidazole",
+  "gentamicin", "hydrocortisone", "methylprednisolone", "dexamethasone", "prednisolone",
+  "prednisone", "sugammadex", "neostigmine", "glycopyrrolate", "mannitol", "calcium", "amiodarone",
+  "desethylamiodarone", "MEGX", "norpethidine", "PPX", "amiodaroneIV", "escitalopram",
+  "citalopram", "sertraline", "paroxetine", "duloxetine", "mirtazapine", "bupropion",
+  "hydroxybupropion", "fluoxetine", "norfluoxetine", "venlafaxine", "desvenlafaxine",
+  "methylphenidate", "methylphenidatePediatric", "lisdexamfetamine", "mixedAmphetamineSalts",
+  "ondansetron", "aprepitant", "fosaprepitant", "quetiapine", "risperidone", "hydroxyrisperidone",
+  "aripiprazole", "dehydroaripiprazole", "olanzapine", "haloperidol", "haloperidolIV",
+  "droperidol", "droperidolIM", "air", "oxygen", "nitrousOxide", "sevoflurane", "isoflurane",
+  "desflurane", "ventilation", "phenytoin", "carbamazepine", "valproate", "phenobarbital",
+  "pentobarbital", "ethosuximide", "topiramate", "lacosamide", "lamotrigine", "zonisamide",
+  "tiagabine", "levetiracetam", "eslicarbazepine", "cenobamate", "diamorphine", "carfentanil",
+  "semaglutide", "tirzepatide", "liraglutide", "liraglutideWatson", "insulinRegular",
+  "insulinRegularU500", "insulinNPH", "insulinHumanMix70", "insulinLispro", "insulinLisproMix75",
+  "insulinLisproMix50", "insulinGlargine", "metformin", "empagliflozin", "ertugliflozin",
+  "glyburide", "dulaglutide", "dapagliflozin", "dapagliflozinKobuchi", "canagliflozin",
+  "pioglitazone", "pramlintideIV", "exenatide", "lixisenatide", "linagliptin", "vildagliptin",
+  "semaglutideOral", "cetagliptin", "heparin", "heparinCPB", "bivalirudin", "argatroban",
+  "enoxaparin", "fondaparinux", "apixaban", "apixabanVTE", "rivaroxaban", "edoxaban", "dabigatran",
+  "dabigatranHip", "warfarin", "fluindione", "acenocoumarol", "cocaine", "methamphetamine", "LSD",
+  "psilocybin", "MDMA", "clevidipine", "fenoldopamPediatric", "carvedilol", "azilsartan",
+  "benazepril", "enalapril", "enalaprilat", "fosinopril", "chlorthalidone", "lisinopril",
+  "olmesartan", "valsartan", "hydrochlorothiazide", "epinephrine", "magnesiumSulfate", "labetalol",
+  "diltiazem", "nitroglycerin", "norepinephrine", "procainamide", "esmolol", "dopamine",
+  "atropine", "propranolol", "digoxin", "digoxinIV", "digoxinIVPediatric", "verapamil",
+  "phenylephrine", "milrinone", "milrinonePediatric", "metoprolol", "nicardipine", "vasopressin",
+  "hydralazine", "methyleneBlue", "dobutamineNeonatal", "GHB", "apomorphine", "pramipexole",
+  "pramipexoleER", "safinamide", "istradefylline", "pimavanserin", "levodopa",
+  "levodopaIntestinalGel", "levodopaSimon", "levodopaEntacaponeIntestinalGel", "opicapone",
+  "tolcapone", "amantadineER", "cladribine", "fluorouracil", "fluorouracilBriki", "carboplatin",
+  "carboplatinDuffull", "busulfan", "methotrexatePediatric", "methotrexate", "methotrexateIbarra",
+  "fluorouracilTan", "etoposidePediatric", "pemetrexed", "melphalan", "melphalanNath",
+  "vincristine", "vincristineIgarashi", "docetaxel", "cyclophosphamide", "cyclophosphamideJoerger",
+  "cyclophosphamideMcCune", "doxorubicin", "doxorubicinJoerger", "doxorubicinol",
+  "doxorubicinolJoerger", "doxorubicinLiposomal", "doxorubicinLiposomalFree", "irinotecan",
+  "irinotecanSN38", "topotecan", "vinorelbine", "cisplatin", "etoposide", "etoposideKroghMadsen",
+  "cisplatinBound", "doxorubicinPediatric", "doxorubicinolPediatric", "daunorubicin",
+  "carboplatinPediatric", "carboplatinPeng", "melphalanPediatric", "etoposideDuong", "gemcitabine",
+  "capecitabine", "gemcitabineDFDU", "capecitabine5FU", "paclitaxel", "paclitaxelJoerger",
+  "paclitaxelCrombag", "paclitaxelProteinBound", "vincristinePediatric", "oxaliplatin",
+  "oxaliplatinBastian", "oxaliplatinNikanjam", "bendamustine", "fludarabine",
+  "doxorubicinPerezBlanco", "doxorubicinolPerezBlanco", "cytarabine", "ifosfamide", "epirubicin",
+  "theophylline", "lithiumCarbonate", "tranexamicAcid", "caffeineNeonatal", "tacrolimus",
+  "sotalol", "voriconazole", "clozapine", "norclozapine", "tobramycin", "amikacin", "flumazenil",
+  "ganciclovir", "sirolimus", "everolimus", "dofetilide", "quinidine", "nortriptyline",
+  "temozolomide", "temozolomideOstermann", "temozolomidePanetta", "dacarbazine", "bleomycin",
+  "thioguanine", "thioguanineIV", "linezolid", "cyclosporine", "scopolamine", "flecainide",
+  "mexiletine", "amitriptyline", "meropenem", "piperacillin", "colistimethate", "colistin",
+  "cefepime", "treprostinil", "sildenafil", "tadalafil", "riociguat", "selexipag", "ACT333679",
+  "ambrisentan", "macitentan", "aprocitentan",
 ]);
 // The library drugs whose row offers a target unit in stanpumpR (tciApiDrugNames()).
-// Oxycodone joined them at stanpumpR 7d2d2f1 (its row gained target units).
-const STANPUMPR_TCI_DRUGS = Object.freeze(["propofol", "remifentanil", "fentanyl", "alfentanil",
-  "sufentanil", "hydromorphone", "ketamine", "etomidate", "lidocaine", "oxycodone"]);
+// Remimazolam joined them in November 2026 (its row gained target units).
+const STANPUMPR_TCI_DRUGS = Object.freeze([
+  "propofol", "remifentanil", "fentanyl", "alfentanil", "sufentanil", "hydromorphone", "ketamine",
+  "etomidate", "lidocaine", "oxycodone", "remimazolam",
+]);
 
 // ---------------------------------------------------------------------------
 // Errors and warnings

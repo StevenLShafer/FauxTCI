@@ -795,7 +795,7 @@ test("summaries read as the panel shows them", async () => {
   assert.match(line, /^Run [0-9.]+ mL\/hr for 10 s \(ideal [0-9.]+; rounded down to 0\.1\), then fall back to [0-9.]+ mL\/hr\. Plan: plasma hold, maintenance\. Ce now [0-9.]+, at hold end [0-9.]+, peak [0-9.]+ at 14:0[0-9]:[0-9.]+\. Next request at 14:0[0-9]:[0-9]{2}\.$/);
   assert.equal(x.summary, line);
   const first = pump.snapshot().exchanges[0];
-  assert.match(first.summary, /^Run 1200 mL\/hr for 10 s \(ideal 1702\.21; ceiling\), then fall back to 504\.1 mL\/hr\. Plan: effect-site, loading\./);
+  assert.match(first.summary, /^Run 1200 mL\/hr for 10 s \(ideal 1702\.23; ceiling\), then fall back to 504\.1 mL\/hr\. Plan: effect-site, loading\./);
   assert.equal(summarizeError(422, { errors: [{ code: "UNIT_MISMATCH", message: "m", pointer: "/target/units" }] }),
     "422 UNIT_MISMATCH at /target/units: m");
   assert.equal(summarizeError(0, null, "network: down"), "No response (network: down).");

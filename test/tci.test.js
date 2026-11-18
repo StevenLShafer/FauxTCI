@@ -42,6 +42,7 @@ const fixture = async (name) =>
   JSON.parse(await readFile(new URL(`./fixtures/${name}`, import.meta.url), "utf8"));
 const rateCases = await fixture("rate-cases.json");
 const models = await fixture("models.json");
+const manifest = await fixture("manifest.json");
 
 const TOL_RELATIVE = 1e-8;
 const TOL_ABSOLUTE_NEAR_ZERO = 1e-10; // for fixture values below 1e-6
@@ -170,9 +171,12 @@ function expectError(request, status, code, pointer, options = {}) {
 // The fixture itself
 
 test("rate-cases.json is what the README describes", () => {
-  assert.equal(rateCases.cases.length, 49);
+  // 23 cases per drug, sufentanil and remimazolam adding the two adjustToFFM
+  // cases (w) and (w2), plus (q), (r) and the documented example.
+  assert.equal(rateCases.cases.length, 99);
   assert.equal(rateCases.errors.length, 13);
-  assert.equal(rateCases.stanpumpRCommit, "7d2d2f1b7727f39eba313fd8c5deea5b5104d959");
+  assert.equal(rateCases.stanpumpRCommit, manifest.commit);
+  assert.deepEqual([...new Set(rateCases.cases.map((c) => c.drug))], [...TCI_API.DRUGS]);
   for (const c of rateCases.cases) {
     assert.deepEqual(c.response.warnings.map((w) => w.code), c.warnings, c.name);
   }
@@ -285,9 +289,11 @@ test("tciApiModel() equals the fixture model block apart from hash", (t) => {
   let total = 0;
   const check = (block, expected, label) => {
     total += 1;
-    for (const key of ["drug", "reference", "concentrationUnits", "massUnits", "tPeak", "adjustToFFM"]) {
+    for (const key of ["drug", "reference", "concentrationUnits", "massUnits", "adjustToFFM"]) {
       assert.equal(block[key], expected[key], `${label} ${key}`);
     }
+    // Remimazolam's tPeak is solved from its ke0, so it is a computed number.
+    assert.ok(Math.abs(block.tPeak - expected.tPeak) <= 1e-9, `${label} tPeak ${block.tPeak} vs ${expected.tPeak}`);
     assert.deepEqual(Object.keys(block.parameters), Object.keys(expected.parameters), `${label} parameter order`);
     for (const [name, value] of Object.entries(expected.parameters)) {
       const tol = name === "ke0" ? TOL_MODEL_KE0 : TOL_MODEL_ARITHMETIC;
@@ -369,7 +375,7 @@ test("the server block names this port", () => {
   const health = tciApiHealth(new Date("2026-10-11T14:00:00.000Z"));
   assert.deepEqual(health, {
     apiVersion: "1.0", status: "ok", package: "FauxTCI", version: FAUXTCI_VERSION, commit: null,
-    serverTime: "2026-10-11T14:00:00.000Z", tciDrugs: 2,
+    serverTime: "2026-10-11T14:00:00.000Z", tciDrugs: 4,
   });
 });
 
@@ -401,12 +407,21 @@ test("md5() agrees with node:crypto on UTF-8 text and every padding boundary", (
 
 test("model.hash is the MD5 of the parameters rounded to ten significant digits, in jsonlite's spelling", () => {
   // The fixtures' README: md5 of toJSON(signif(parameters, 10), auto_unbox = TRUE, digits = NA) plus a newline.
+  const spell = (parameters) => "{" + Object.entries(parameters)
+    .map(([k, v]) => `"${k}":${Number(v.toPrecision(10))}`).join(",") + "}\n";
+  const digest = (text) => "md5:" + createHash("md5").update(text, "utf8").digest("hex");
+  // The port's hash is that of its own parameters...
   const m = models.entries[0];
   const block = tciApiModel(m.drug, m.patient.weight, m.patient.height, m.patient.age, m.patient.sex, true);
-  const text = "{" + Object.entries(block.parameters)
-    .map(([k, v]) => `"${k}":${Number(v.toPrecision(10))}`).join(",") + "}\n";
-  assert.equal(block.hash, "md5:" + createHash("md5").update(text, "utf8").digest("hex"));
-  assert.equal(block.hash, m.model.hash, "for the reference adult the hash equals R's");
+  assert.equal(block.hash, digest(spell(block.parameters)));
+  // ...and the same spelling of R's parameters gives R's hash, for every model
+  // in the fixtures.  (The port's own hash equals R's only where its ke0
+  // rounds to the same ten digits: ke0 is the root of a search, and the
+  // covariate models' exp() and pow() already differ from R's libm in the last
+  // bit, so the two agree to about 1e-11, not exactly.)
+  for (const entry of models.entries) {
+    assert.equal(digest(spell(entry.model.parameters)), entry.model.hash, `${entry.drug}/${entry.patientId}`);
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -996,11 +1011,11 @@ test("every number a pump acts on is finite in every fixture response", () => {
 // ---------------------------------------------------------------------------
 // The other endpoints and the constants
 
-test("tciApiDrugs() lists the two drugs with the R body's shape", () => {
+test("tciApiDrugs() lists the four drugs with the R body's shape", () => {
   const body = tciApiDrugs();
   assert.equal(body.apiVersion, "1.0");
-  assert.deepEqual(body.drugs.map((d) => d.drug), ["propofol", "remifentanil"]);
-  const [propofol, remifentanil] = body.drugs;
+  assert.deepEqual(body.drugs.map((d) => d.drug), ["propofol", "remifentanil", "sufentanil", "remimazolam"]);
+  const [propofol, remifentanil, sufentanil, remimazolam] = body.drugs;
   assert.deepEqual(propofol, {
     drug: "propofol", concentrationUnits: "mcg/mL", massUnits: "mg", sites: ["effect", "plasma"],
     typicalTarget: 3, typicalRange: { lower: 2.5, upper: 4 }, targetCeiling: 20, tPeak: 1.6,
@@ -1010,6 +1025,17 @@ test("tciApiDrugs() lists the two drugs with the R body's shape", () => {
   assert.equal(remifentanil.massUnits, "mcg");
   assert.deepEqual(remifentanil.typicalRange, { lower: 0.8, upper: 2 });
   assert.equal(remifentanil.targetCeiling, 10);
+  assert.equal(sufentanil.concentrationUnits, "ng/mL");
+  assert.equal(sufentanil.massUnits, "mcg");
+  assert.deepEqual(sufentanil.typicalRange, { lower: 0.0448, upper: 0.112 });
+  assert.equal(sufentanil.tPeak, 5.6);
+  assert.equal(remimazolam.concentrationUnits, "mcg/mL");
+  assert.equal(remimazolam.massUnits, "mg");
+  assert.deepEqual(remimazolam.typicalRange, { lower: 0.3, upper: 0.6 });
+  assert.equal(remimazolam.targetCeiling, 3);
+  // tPeak solved from the model's ke0 for the reference patient.
+  const remiModel = models.entries.find((m) => m.drug === "remimazolam" && m.patientId === "adult-male-70" && m.adjustToFFM);
+  assert.ok(Math.abs(remimazolam.tPeak - remiModel.tPeak) <= 1e-9);
   assert.deepEqual(body.referencePatient, { weight: 70, height: 170, age: 50, sex: "male" });
   assert.deepEqual(body.units.rate, [...TCI_API.RATE_UNITS]);
   assert.deepEqual(body.units.bolus, ["mL", "mg", "mcg", "mg/kg", "mcg/kg"]);
@@ -1047,6 +1073,6 @@ test("TCI_API carries the R constants", () => {
   assert.deepEqual([...TCI_API.INFUSATE_UNITS], ["mg/mL", "mcg/mL"]);
   assert.deepEqual([...TCI_API.CONCENTRATION_UNITS], ["mcg/mL", "ng/mL"]);
   assert.deepEqual([...TCI_API.PUMP_STATES], ["running", "paused", "alarm", "occlusion", "syringeEmpty", "purging", "standby"]);
-  assert.deepEqual([...TCI_API.DRUGS], ["propofol", "remifentanil"]);
+  assert.deepEqual([...TCI_API.DRUGS], ["propofol", "remifentanil", "sufentanil", "remimazolam"]);
   assert.ok(Object.isFrozen(TCI_API));
 });

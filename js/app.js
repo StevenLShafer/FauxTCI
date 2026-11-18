@@ -44,13 +44,20 @@ const HISTORY_COLLAPSE = 8; // a request's history is collapsed when longer than
 const LOG_LINES = 300; // lines kept in the exchange log under the wire panes
 const SLIDER_MAX_LATENCY = 15; // s, the actual-latency slider's range
 
-// The syringe presets of spec section 7 (the usual dilutions).
+// The syringe presets of spec section 7 (the usual dilutions).  Sufentanil
+// is sold at 50 mcg/mL and diluted to 1 or 5 mcg/mL; remimazolam (Byfavo) is
+// reconstituted to 2.5 mg/mL, and diluted to 1 mg/mL for an infusion.
 const SYRINGE_PRESETS = Object.freeze({
   propofol: Object.freeze({ units: "mg/mL", values: [10, 20], initial: 10 }),
   remifentanil: Object.freeze({ units: "mcg/mL", values: [20, 50, 100], initial: 50 }),
+  sufentanil: Object.freeze({ units: "mcg/mL", values: [1, 5, 50], initial: 5 }),
+  remimazolam: Object.freeze({ units: "mg/mL", values: [1, 2.5], initial: 2.5 }),
 });
 
-const DRUGS = tciApiDrugs().drugs; // the two drugs, their units and typical ranges
+// The hand bolus each drug's form starts with, in its mass units.
+const BOLUS_DEFAULTS = Object.freeze({ propofol: 20, remifentanil: 50, sufentanil: 10, remimazolam: 5 });
+
+const DRUGS = tciApiDrugs().drugs; // the drugs, their units and typical ranges
 
 // Characters used in the readouts, as escapes so the source stays ASCII.
 const MIDDOT = "\u00b7";
@@ -338,7 +345,7 @@ function fillDrugDependentFields() {
   }
   for (const span of document.querySelectorAll(".syringe-units")) span.textContent = preset.units;
   el.bolusUnits.textContent = info.massUnits;
-  el.bolusAmount.value = drug === "propofol" ? "20" : "50";
+  el.bolusAmount.value = String(BOLUS_DEFAULTS[drug]);
   el.targetUnits.textContent = info.concentrationUnits;
   el.targetRange.textContent = `Typical ${info.typicalRange.lower} to ${info.typicalRange.upper} ${info.concentrationUnits}; ` +
     `above ${info.targetCeiling} the API refuses the target; 0 stops the infusion.`;
@@ -1073,7 +1080,7 @@ function cssVar(name) {
 
 function theme(drug) {
   return {
-    drug: cssVar(drug === "remifentanil" ? "--series-remifentanil" : "--series-propofol") || "#ffcc00",
+    drug: cssVar(`--series-${drug}`) || "#ffcc00",
     target: cssVar("--series-target") || "#6b7580",
     rate: cssVar("--series-rate") || "#2f6fd1",
     ceiling: cssVar("--series-ceiling") || "#9aa3ad",

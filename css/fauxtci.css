@@ -1,8 +1,9 @@
 /* FauxTCI: styles for index.html.  Light and dark through prefers-color-scheme
    and CSS custom properties; no framework, no external font.  The series
    colours are stanpumpR's library colours (inst/extdata/drugDefaults_global.csv:
-   propofol #FFCC00, remifentanil #0000C0); the dark scheme lightens the
-   remifentanil blue so it reads on a dark surface.  The charts read these
+   propofol #FFCC00, remifentanil #0000C0, sufentanil #0491E2, remimazolam
+   #E36C0A); the dark scheme lightens the blues and the orange so they read on
+   a dark surface.  The charts read these
    variables from the computed style, so they follow the scheme too.
    Drafted by Claude Code, 2026-10-12, at the request of Steven L. Shafer. */
 
@@ -24,6 +25,8 @@
   --lamp-off: #9aa3ad;
   --series-propofol: #ffcc00;
   --series-remifentanil: #0000c0;
+  --series-sufentanil: #0491e2;
+  --series-remimazolam: #e36c0a;
   --series-target: #6b7580;
   --series-rate: #2f6fd1;
   --series-ceiling: #9aa3ad;
@@ -63,6 +66,8 @@
     --lamp-off: #4e5a68;
     --series-propofol: #ffd33d;
     --series-remifentanil: #7d9bff;
+    --series-sufentanil: #5cc0ff;
+    --series-remimazolam: #ff9a4d;
     --series-target: #aab4c0;
     --series-rate: #7d9bff;
     --series-ceiling: #6b7580;
