@@ -12,23 +12,32 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import {
   resolveModel, buildKinetics, advance, bolus, cp, ce, emptyState,
-  brentFmin, cube, CE, tPeakError, peakTimeForKe0, ke0FromTPeak,
-  validateCovariates, baseUnits, OPTIMIZE_TOL, DRUG_LIBRARY,
+  brentFmin, cube, CE, effectSitePeak, effectSitePeakTime, ke0Bracket, ke0FromTPeakBolus,
+  separateEigenvalues, sumR, uniroot, zeroin2, pkSizeFactors, ffmAlSallami, FFM_REFERENCE,
+  validateCovariates, baseUnits, OPTIMIZE_TOL, UNIROOT_TOL, DRUG_LIBRARY, DRUG_FUNCTIONS,
 } from "../js/pk.js";
 
 const fixture = async (name) =>
   JSON.parse(await readFile(new URL(`./fixtures/${name}`, import.meta.url), "utf8"));
 const models = await fixture("models.json");
 const ke0Solve = await fixture("ke0-solve.json");
+const manifest = await fixture("manifest.json");
 
 // Tolerances.  The first two are the figures the fixtures' README asks a port
 // to meet; the ke0 figure is the README's aim (its hard bound is 2.5e-4).
 const TOL_ARITHMETIC = 1e-10; // relative: parameters, eigenvalues, coefficients with R's ke0 injected
-const TOL_KE0 = 1e-6; // relative: the JavaScript ke0 against R's
+const TOL_KE0 = 1e-9; // relative: the JavaScript ke0 against R's
 const TOL_PEAK_MINUTES = 0.01; // the effect-site peak recomputed from the JavaScript ke0
-const TOL_INNER_MINUTES = 1e-8; // the inner optimizer's peak time against the fixture's round trip
-const TOL_OBJECTIVE = 1e-8; // absolute, tPeakError() and predPeak at the fixture's sample points
+const TOL_INNER_MINUTES = 1e-8; // effectSitePeakTime() against the fixture's, at the same ke0
+
+// 1200 mL/hr of each drug's FauxTCI syringe, in base units per minute: a
+// loading rate of the right order for the ODE check.
+const LOADING_RATE = { propofol: 200, remifentanil: 1000, sufentanil: 100, remimazolam: 20 };
 const TOL_ODE = 1e-9; // relative, advance() against an RK4 integration of the compartment ODEs
+
+// R wrote the fixtures with 15 significant digits: a number computed here
+// equals a fixture's when it prints the same at that precision.
+const asFixture = (x) => Number(x.toPrecision(15));
 
 const relativeError = (value, reference) =>
   Math.abs(value - reference) / Math.max(Math.abs(reference), Number.MIN_VALUE);
@@ -51,13 +60,17 @@ const modelFor = (entry, extra = {}) =>
   resolveModel({ drug: entry.drug, ...entry.patient, adjustToFFM: entry.adjustToFFM, ...extra });
 
 test("fixtures are what the README describes", () => {
-  assert.equal(models.entries.length, 16);
-  assert.equal(ke0Solve.entries.length, 16);
-  assert.equal(models.stanpumpRCommit, "7d2d2f1b7727f39eba313fd8c5deea5b5104d959");
-  assert.equal(ke0Solve.optimizer.outer.tol, OPTIMIZE_TOL);
-  assert.equal(ke0Solve.optimizer.inner.tol, OPTIMIZE_TOL);
-  assert.deepEqual(ke0Solve.optimizer.outer.interval, [0, 200]);
-  assert.deepEqual(ke0Solve.optimizer.inner.interval, [0, 100]);
+  // 8 patients: propofol and remifentanil at adjustToFFM TRUE, which they
+  // ignore; sufentanil and remimazolam at TRUE and FALSE.
+  assert.equal(models.entries.length, 48);
+  assert.equal(ke0Solve.entries.length, 48);
+  assert.equal(manifest.modelEntries, 48);
+  assert.equal(models.stanpumpRCommit, manifest.commit);
+  assert.equal(ke0Solve.stanpumpRCommit, manifest.commit);
+  assert.deepEqual([...new Set(models.entries.map((e) => e.drug))], Object.keys(DRUG_FUNCTIONS));
+  assert.equal(ke0Solve.solver.root.tol, asFixture(UNIROOT_TOL));
+  assert.equal(ke0Solve.solver.peak.tol, asFixture(OPTIMIZE_TOL));
+  assert.deepEqual(ke0Solve.solver.root.bracketStart, [1e-3, 1]);
 });
 
 test("parameters, eigenvalues and every coefficient match models.json with R's ke0 injected", (t) => {
@@ -101,7 +114,7 @@ test("parameters, eigenvalues and every coefficient match models.json with R's k
     `(${worstCoefficient.name}, ${worstCoefficient.entry}; tolerance ${TOL_ARITHMETIC})`);
 });
 
-test("the solved ke0 matches R's for all 16 models", (t) => {
+test("the solved ke0, and remimazolam's solved tPeak, match R's for all 48 models", (t) => {
   let worst = { value: 0 };
   for (const entry of models.entries) {
     const model = modelFor(entry);
@@ -114,49 +127,61 @@ test("the solved ke0 matches R's for all 16 models", (t) => {
     COEFFICIENT_NAMES.ebolus.forEach((name, i) => {
       assert.ok(relativeError(model.coef.ebolus[i], entry.pk[name]) <= 1e-9, name);
     });
+    assert.ok(Math.abs(model.params.tPeak - entry.tPeak) <= 1e-9,
+      `${entry.drug} ${entry.patientId} tPeak ${model.params.tPeak} vs ${entry.tPeak}`);
   }
   t.diagnostic(`max relative error, ke0 from the covariates: ${worst.value.toExponential(3)} ` +
     `(${worst.entry}; tolerance ${TOL_KE0}, README hard bound 2.5e-4)`);
 });
 
-test("the solve from ke0-solve.json's inputs reproduces R's ke0, objective and inner peak", (t) => {
+test("the solve from ke0-solve.json's inputs reproduces R's bracket, ke0, tPeak and peak times", (t) => {
   let worstKe0 = 0;
-  let worstInner = 0;
-  let worstObjective = 0;
-  let worstPredPeak = 0;
+  let worstTPeak = 0;
+  let worstPeak = 0;
   for (const entry of ke0Solve.entries) {
     const { p_coef_bolus: p, lambda } = entry.inputs;
-    const ke0 = ke0FromTPeak(entry.tPeak, p, lambda);
-    worstKe0 = Math.max(worstKe0, relativeError(ke0, entry.ke0));
-    assert.ok(relativeError(ke0, entry.ke0) <= TOL_KE0, `${entry.drug} ${entry.patientId} ke0 ${ke0} vs ${entry.ke0}`);
+    const label = `${entry.drug} ${entry.patientId} adjustToFFM=${entry.adjustToFFM}`;
+    if (entry.solve === "ke0FromTPeak") {
+      // The bracket is decided by comparisons, so it must be R's exactly.
+      const bracket = ke0Bracket(entry.tPeak, p, lambda);
+      assert.equal(bracket.lower, entry.bracket.lower, `${label} bracket lower`);
+      assert.equal(bracket.upper, entry.bracket.upper, `${label} bracket upper`);
+      const ke0 = ke0FromTPeakBolus(entry.tPeak, p, lambda);
+      worstKe0 = Math.max(worstKe0, relativeError(ke0, entry.ke0BeforeSeparation));
+      assert.ok(relativeError(ke0, entry.ke0BeforeSeparation) <= TOL_KE0, `${label} ke0 ${ke0} vs ${entry.ke0BeforeSeparation}`);
+      // separateEigenvalues() leaves a ke0 that ties with no eigenvalue alone.
+      assert.equal(separateEigenvalues(entry.ke0BeforeSeparation, lambda), entry.ke0);
+    } else {
+      assert.equal(entry.solve, "tPeakFromKe0");
+      assert.equal(entry.modelKe0, asFixture(Math.exp(-1.20976)));
+      const tPeak = effectSitePeakTime(p, lambda, entry.modelKe0);
+      worstTPeak = Math.max(worstTPeak, Math.abs(tPeak - entry.tPeakResolved));
+      assert.ok(Math.abs(tPeak - entry.tPeakResolved) <= TOL_INNER_MINUTES, `${label} tPeak ${tPeak} vs ${entry.tPeakResolved}`);
+    }
 
-    // The round trip: what the inner optimizer saw at R's ke0.
-    const inner = peakTimeForKe0(entry.ke0, ...p, ...lambda);
-    worstInner = Math.max(worstInner, Math.abs(inner - entry.roundTrip.peakTimeInnerOptimize));
-    assert.ok(Math.abs(inner - entry.roundTrip.peakTimeInnerOptimize) <= TOL_INNER_MINUTES);
-
-    // The effect-site coefficients tPeakError() builds at R's ke0.
+    // The effect-site coefficients getDrugPK() builds at R's ke0.
     const e = p.map((pi, i) => pi / (entry.ke0 - lambda[i]) * entry.ke0);
     e.push(-e[0] - e[1] - e[2]);
     e.forEach((value, i) => assert.ok(relativeError(value, entry.e_coef_bolus[i]) <= TOL_ARITHMETIC));
-    assert.ok(Math.abs(CE(inner, ...e, ...lambda, entry.ke0) - entry.roundTrip.ceAtPeakInnerOptimize) <= 1e-12);
 
-    // The objective function, inner optimizer included, at the sample points.
-    for (const sample of entry.objectiveSamples) {
-      const objective = tPeakError(sample.ke0, entry.tPeak, ...p, ...lambda);
-      const predPeak = peakTimeForKe0(sample.ke0, ...p, ...lambda);
-      worstObjective = Math.max(worstObjective, Math.abs(objective - sample.objective));
-      worstPredPeak = Math.max(worstPredPeak, Math.abs(predPeak - sample.predPeak));
-      assert.ok(Math.abs(objective - sample.objective) <= TOL_OBJECTIVE,
-        `${entry.drug} ${entry.patientId} objective at ke0 ${sample.ke0}: ${objective} vs ${sample.objective}`);
-      assert.ok(Math.abs(predPeak - sample.predPeak) <= TOL_OBJECTIVE,
-        `${entry.drug} ${entry.patientId} predPeak at ke0 ${sample.ke0}: ${predPeak} vs ${sample.predPeak}`);
+    // effectSitePeakTime() at R's ke0, and at the sample points around it.
+    const peak = effectSitePeak(p, lambda, entry.ke0);
+    // 20 / the slowest rate, from 15-digit inputs: equal to the last digit or so.
+    assert.ok(relativeError(peak.window, entry.roundTrip.window) <= 1e-13, `${label} search window`);
+    worstPeak = Math.max(worstPeak, Math.abs(peak.time - entry.roundTrip.peakTime));
+    assert.ok(Math.abs(peak.time - entry.roundTrip.peakTime) <= TOL_INNER_MINUTES, `${label} peak ${peak.time}`);
+    assert.ok(relativeError(CE(peak.time, ...e, ...lambda, entry.ke0), entry.roundTrip.ceAtPeak) <= 1e-12);
+    for (const sample of entry.peakSamples) {
+      const at = effectSitePeak(p, lambda, sample.ke0);
+      assert.ok(relativeError(at.window, sample.window) <= 1e-13, `${label} window at ke0 ${sample.ke0}`);
+      worstPeak = Math.max(worstPeak, Math.abs(at.time - sample.peakTime));
+      assert.ok(Math.abs(at.time - sample.peakTime) <= TOL_INNER_MINUTES,
+        `${label} peak at ke0 ${sample.ke0}: ${at.time} vs ${sample.peakTime}`);
     }
   }
   t.diagnostic(`max relative error, ke0 from the fixture's own inputs: ${worstKe0.toExponential(3)} (tolerance ${TOL_KE0})`);
-  t.diagnostic(`max |inner peak time - fixture| (min): ${worstInner.toExponential(3)} (tolerance ${TOL_INNER_MINUTES})`);
-  t.diagnostic(`max |tPeakError - fixture|: ${worstObjective.toExponential(3)}, ` +
-    `max |predPeak - fixture| (min): ${worstPredPeak.toExponential(3)} (tolerance ${TOL_OBJECTIVE})`);
+  t.diagnostic(`max |remimazolam tPeak - fixture| (min): ${worstTPeak.toExponential(3)} (tolerance ${TOL_INNER_MINUTES})`);
+  t.diagnostic(`max |effectSitePeakTime - fixture| (min): ${worstPeak.toExponential(3)} (tolerance ${TOL_INNER_MINUTES})`);
 });
 
 test("the effect site after a unit bolus peaks at tPeak with the JavaScript ke0", (t) => {
@@ -165,12 +190,13 @@ test("the effect site after a unit bolus peaks at tPeak with the JavaScript ke0"
     const model = modelFor(entry);
     // The inner optimizer's answer, and a fine grid as a second opinion that
     // does not share the optimizer's code.
-    const peak = peakTimeForKe0(model.params.ke0, ...model.coef.pbolus, ...model.lambda3);
+    const peak = effectSitePeakTime(model.coef.pbolus, model.lambda3, model.params.ke0);
     const unit = bolus(emptyState(), 1, model);
     let gridPeak = 0;
     let gridMax = -Infinity;
-    for (let step = 0; step <= 4000; step++) {
-      const time = step * 0.001; // 0 .. 4 min by 0.001
+    const steps = Math.ceil((entry.tPeak + 2) * 1000);
+    for (let step = 0; step <= steps; step++) {
+      const time = step * 0.001; // 0 .. tPeak + 2 min by 0.001
       const value = ce(advance(unit, time, 0, model));
       if (value > gridMax) { gridMax = value; gridPeak = time; }
     }
@@ -180,8 +206,9 @@ test("the effect site after a unit bolus peaks at tPeak with the JavaScript ke0"
     assert.ok(Math.abs(gridPeak - entry.tPeak) <= TOL_PEAK_MINUTES, `grid peak ${gridPeak}`);
     // ...and the concentration there is the fixture's (1 / vdPeakEffect).
     const ceAtPeak = ce(advance(unit, peak, 0, model));
-    const reference = ke0Solve.entries.find((k) => k.drug === entry.drug && k.patientId === entry.patientId);
-    assert.ok(relativeError(ceAtPeak, reference.roundTrip.ceAtPeakInnerOptimize) <= 1e-9);
+    const reference = ke0Solve.entries.find((k) => k.drug === entry.drug && k.patientId === entry.patientId &&
+      k.adjustToFFM === entry.adjustToFFM);
+    assert.ok(relativeError(ceAtPeak, reference.roundTrip.ceAtPeak) <= 1e-9);
   }
   t.diagnostic(`max |peak time - tPeak| (min) with the JavaScript ke0: ${worst.value.toExponential(3)} ` +
     `(tolerance ${TOL_PEAK_MINUTES})`);
@@ -215,9 +242,7 @@ test("advance() over one 10 s step at a constant rate agrees with the compartmen
   for (const entry of models.entries) {
     const model = modelFor(entry, { ke0: entry.pk.ke0 });
     const dt = 10 / 60;
-    // A loading rate of the right order: 1200 mL/hr of 1% propofol is 200
-    // mg/min; 1200 mL/hr of 50 mcg/mL remifentanil is 1000 mcg/min.
-    const rate = entry.drug === "propofol" ? 200 : 1000;
+    const rate = LOADING_RATE[entry.drug];
 
     // From nothing on board.
     const closed = advance(emptyState(), dt, rate, model);
@@ -274,7 +299,7 @@ test("units, library row, reference and branch are the fixtures'", () => {
     assert.equal(model.reference, entry.reference);
     assert.equal(model.reference, entry.model.reference);
     assert.equal(model.branch, entry.branch);
-    assert.equal(model.params.tPeak, entry.tPeak);
+    assert.ok(Math.abs(model.params.tPeak - entry.tPeak) <= 1e-9, `${entry.drug} tPeak`);
     assert.equal(model.typical, entry.typical);
     assert.equal(model.upper, entry.upperTypical);
     assert.equal(model.lower, entry.lowerTypical);
@@ -288,11 +313,17 @@ test("units, library row, reference and branch are the fixtures'", () => {
   const remifentanil = resolveModel({ drug: "remifentanil", weight: 70, height: 170, age: 50, sex: "male" });
   assert.equal(remifentanil.concentrationUnits, "ng/mL");
   assert.equal(remifentanil.massUnits, "mcg");
+  const sufentanil = resolveModel({ drug: "sufentanil", weight: 70, height: 170, age: 50, sex: "male" });
+  assert.equal(sufentanil.concentrationUnits, "ng/mL");
+  assert.equal(sufentanil.massUnits, "mcg");
+  const remimazolam = resolveModel({ drug: "remimazolam", weight: 70, height: 170, age: 50, sex: "male" });
+  assert.equal(remimazolam.concentrationUnits, "mcg/mL");
+  assert.equal(remimazolam.massUnits, "mg");
   assert.deepEqual(baseUnits("ng"), { massUnits: "mcg", concentrationUnits: "ng/mL" });
   assert.deepEqual(baseUnits("mcg"), { massUnits: "mg", concentrationUnits: "mcg/mL" });
 });
 
-test("remifentanil switches from Eleveld 2017 to Kim 2017 at a BMI of 30", () => {
+test("remifentanil switches from Eleveld 2017 to Kim 2017 at a BMI of 30 in adults", () => {
   // 97.2 kg at 180 cm is a BMI of exactly 30.
   const below = resolveModel({ drug: "remifentanil", weight: 97.1, height: 180, age: 40, sex: "male" });
   const at = resolveModel({ drug: "remifentanil", weight: 97.2, height: 180, age: 40, sex: "male" });
@@ -303,6 +334,16 @@ test("remifentanil switches from Eleveld 2017 to Kim 2017 at a BMI of 30", () =>
   // Kim: cl3 is the fixed 0.197 L/min and v3 is linear in age.
   assert.equal(at.params.cl3, 0.197);
   assert.equal(at.params.v3, 4 - 0.0477 * (40 - 37));
+  // Kim was fitted in adults: a 17-year-old at BMI 30 gets Eleveld.
+  const teen = resolveModel({ drug: "remifentanil", weight: 97.2, height: 180, age: 17, sex: "male" });
+  assert.equal(teen.branch, "eleveld2017");
+  assert.equal(resolveModel({ drug: "remifentanil", weight: 97.2, height: 180, age: 18, sex: "male" }).branch, "kim2017");
+  // Kim's linear age terms can make a parameter non-positive (V2 here, in a
+  // short, old, obese patient): Eleveld is used and the citation says why.
+  const fallback = resolveModel({ drug: "remifentanil", weight: 25, height: 90, age: 90, sex: "male" });
+  assert.equal(fallback.branch, "eleveld2017");
+  assert.match(fallback.reference,
+    /^Eleveld DJ et al., Anesthesiology 2017.* \(Kim's model for obesity gives a non-positive V2 for this patient, so Eleveld's is used\)$/);
   // adjustToFFM is accepted and ignored by both drugs, as in the R.
   for (const drug of ["propofol", "remifentanil"]) {
     const on = resolveModel({ drug, weight: 60, height: 165, age: 35, sex: "female", adjustToFFM: true });
@@ -310,6 +351,37 @@ test("remifentanil switches from Eleveld 2017 to Kim 2017 at a BMI of 30", () =>
     assert.deepEqual(on.params, off.params);
     assert.equal(on.adjustToFFM, true);
     assert.equal(off.adjustToFFM, false);
+  }
+});
+
+test("sufentanil and remimazolam scale with fat-free mass, and adjustToFFM selects the legacy factors", () => {
+  // The reference man: fat-free mass is the reference's, so the factors are 1.
+  const reference = pkSizeFactors(70, 170, 35, "male");
+  assert.equal(reference.volume, 1);
+  assert.equal(reference.clearance, 1);
+  assert.equal(FFM_REFERENCE, ffmAlSallami(70, 170, 35, "male"));
+  assert.ok(Math.abs(FFM_REFERENCE - 54.48) < 0.01);
+  // The fixtures' own pkSizeFactors() for every scaled entry.
+  for (const entry of models.entries.filter((e) => e.drugFunction.size)) {
+    const { weight, height, age, sex } = entry.patient;
+    const size = pkSizeFactors(weight, height, age, sex, entry.adjustToFFM,
+      ...(entry.drug === "sufentanil" ? [1] : [undefined, Math.pow(weight / 70, 0.75)]));
+    for (const name of ["volume", "clearance", "ffm", "ffmReference", "pkWeight"]) {
+      assert.ok(relativeError(size[name], entry.drugFunction.size[name]) <= TOL_ARITHMETIC,
+        `${entry.drug} ${entry.patientId} ${entry.adjustToFFM} ${name}`);
+    }
+  }
+  // adjustToFFM false: sufentanil is Gepts' 70 kg parameters as printed.
+  const gepts = resolveModel({ drug: "sufentanil", weight: 120, height: 175, age: 45, sex: "female", adjustToFFM: false });
+  assert.deepEqual([gepts.params.v1, gepts.params.v2, gepts.params.v3, gepts.params.cl1, gepts.params.cl2, gepts.params.cl3],
+    [14.3, 63.1, 261.6, 0.92, 1.55, 0.33]);
+  const scaled = resolveModel({ drug: "sufentanil", weight: 120, height: 175, age: 45, sex: "female" });
+  assert.notEqual(scaled.params.v1, 14.3);
+  // Remimazolam: ke0 is the model's at both positions; only tPeak moves.
+  for (const adjustToFFM of [true, false]) {
+    const r = resolveModel({ drug: "remimazolam", weight: 120, height: 175, age: 45, sex: "female", adjustToFFM });
+    assert.equal(r.params.ke0, Math.exp(-1.20976));
+    assert.ok(r.params.tPeak > 1.5 && r.params.tPeak < 4, `${r.params.tPeak}`);
   }
 });
 
@@ -382,6 +454,11 @@ test("buildKinetics() is the coefficient builder on its own", () => {
     assert.equal(kinetics.params.tPeak, entry.tPeak);
     assert.deepEqual(kinetics.lambda3, kinetics.lambda4.slice(0, 3));
   }
+  // A model that gives ke0 and no tPeak gets its tPeak solved from the ke0.
+  const remi = models.entries.find((e) => e.drug === "remimazolam");
+  const fromKe0 = buildKinetics(remi.drugFunction.PK, null, null, remi.drugFunction.ke0);
+  assert.equal(fromKe0.params.ke0, remi.pk.ke0);
+  assert.ok(Math.abs(fromKe0.params.tPeak - remi.tPeak) <= 1e-9);
   // Without a time to peak effect there is no effect site: ke0 and every e coefficient are 0.
   const none = buildKinetics(models.entries[0].drugFunction.PK, 0);
   assert.equal(none.params.ke0, 0);
@@ -409,10 +486,31 @@ test("brentFmin() is R's Brent_fmin", () => {
   assert.equal(OPTIMIZE_TOL, 2 ** -13);
   assert.throws(() => brentFmin((z) => z, 1, 1), /interval/);
   assert.throws(() => brentFmin((z) => z, 0, 1, 0), /tol/);
-  // The outer solve is this routine on tPeakError over [0, 200]: at the
-  // result the objective is at most the fixture's figure within tolerance.
-  const entry = ke0Solve.entries[0];
-  const ke0 = brentFmin(
-    (z) => tPeakError(z, entry.tPeak, ...entry.inputs.p_coef_bolus, ...entry.inputs.lambda), 0, 200, OPTIMIZE_TOL);
-  assert.ok(relativeError(ke0, entry.ke0) <= TOL_KE0);
+});
+
+test("uniroot() and zeroin2() are R's", () => {
+  // A root at an end point is returned as is.
+  assert.equal(zeroin2((x) => x, 0, 1, 0, 1, 1e-8), 0);
+  // sqrt(2) to the tolerance asked for.
+  const root = uniroot((x) => x * x - 2, 0, 2, 1e-12);
+  assert.ok(Math.abs(root - Math.SQRT2) <= 1e-12, `${root}`);
+  // A monotone decreasing function, as effectSitePeakTime(ke0) - tPeak is.
+  const down = uniroot((x) => Math.exp(-x) - 0.5, 0, 5, UNIROOT_TOL);
+  assert.ok(Math.abs(down - Math.LN2) <= 1e-7, `${down}`);
+  assert.throws(() => uniroot((x) => x * x + 1, -1, 1), /opposite sign/);
+  assert.throws(() => uniroot((x) => x, 1, 1), /lower < upper/);
+  assert.equal(UNIROOT_TOL, Math.sqrt(Number.EPSILON));
+});
+
+test("sumR() adds as R's long-double sum() does", () => {
+  // R: sum(c(0.1, 0.2, 0.3)) == 0.6, where a double left-to-right sum is not.
+  assert.equal(sumR([0.1, 0.2, 0.3]), 0.6);
+  assert.notEqual(0.1 + 0.2 + 0.3, 0.6);
+  // R: sum(c(1e16, 1, -1e16)) is 1 (the long double holds the 1).
+  assert.equal(sumR([1e16, 1, -1e16]), 1);
+  // R: sum(c(1e20, 1, -1e20)) is 0 (beyond a 64-bit significand).
+  assert.equal(sumR([1e20, 1, -1e20]), 0);
+  assert.equal(sumR([]), 0);
+  assert.equal(sumR([-2.5]), -2.5);
+  assert.equal(sumR([1, Infinity]), Infinity);
 });

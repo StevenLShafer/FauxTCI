@@ -1,6 +1,7 @@
 #!/usr/bin/env Rscript
 # generate.R -- golden fixtures for FauxTCI (a pure-JavaScript port of the
-# stanpumpR TCI API controller and of the propofol / remifentanil models).
+# stanpumpR TCI API controller and of the propofol, remifentanil, sufentanil
+# and remimazolam models).
 #
 # Run from the root of a stanpumpR checkout:
 #
@@ -73,32 +74,69 @@ P100 <- PATIENTS[[3]]
 P20 <- PATIENTS[[5]]
 covariatesOf <- function(pt) pt[c("weight", "height", "age", "sex")]
 
-DRUGS <- c("propofol", "remifentanil")
-defaultInfusate <- function(drug)
-  if (drug == "propofol") list(concentration = 10, units = "mg/mL") else list(concentration = 50, units = "mcg/mL")
-defaultTarget <- function(drug) if (drug == "propofol") 3 else 4
-concUnitsOf <- function(drug) if (drug == "propofol") "mcg/mL" else "ng/mL"
-massUnitOf <- function(drug) if (drug == "propofol") "mg" else "mcg"
+# The drugs FauxTCI carries, with the syringe, target and doses its cases use.
+# Remimazolam's syringe is Byfavo's reconstituted 2.5 mg/mL (20 mg in 8.2 mL),
+# which a 50 mL syringe holds for the whole of trace 8.
+# `lowered`/`raised` are the targets of cases (d) and (e); `ffm` says whether
+# the drug function reads adjustToFFM (sufentanil and remimazolam scale with
+# pkSizeFactors(); propofol and remifentanil carry their own fat-free mass).
+DRUG_SPECS <- list(
+  propofol     = list(infusate = list(concentration = 10, units = "mg/mL"), target = 3, conc = "mcg/mL", mass = "mg",
+                      bolus = 20, lowered = 2, raised = 4, ffm = FALSE),
+  remifentanil = list(infusate = list(concentration = 50, units = "mcg/mL"), target = 4, conc = "ng/mL", mass = "mcg",
+                      bolus = 50, lowered = 2, raised = 6, ffm = FALSE),
+  sufentanil   = list(infusate = list(concentration = 5, units = "mcg/mL"), target = 0.1, conc = "ng/mL", mass = "mcg",
+                      bolus = 10, lowered = 0.05, raised = 0.2, ffm = TRUE),
+  remimazolam  = list(infusate = list(concentration = 2.5, units = "mg/mL"), target = 0.5, conc = "mcg/mL", mass = "mg",
+                      bolus = 5, lowered = 0.3, raised = 1, ffm = TRUE)
+)
+DRUGS <- names(DRUG_SPECS)
+defaultInfusate <- function(drug) DRUG_SPECS[[drug]]$infusate
+defaultTarget <- function(drug) DRUG_SPECS[[drug]]$target
+concUnitsOf <- function(drug) DRUG_SPECS[[drug]]$conc
+massUnitOf <- function(drug) DRUG_SPECS[[drug]]$mass
 
 pkOf <- function(drug, pt, adjustToFFM = TRUE)
   getDrugPK(drug, pt$weight, pt$height, pt$age, pt$sex, getDrugDefaults(drug), adjustToFFM = adjustToFFM)
 
+# pkSizeFactors() as each scaled drug function calls it, with its own legacy
+# factors (R/drugs_sufentanil.R: legacyVolume 1; R/drugs_remimazolam.R:
+# legacyClearance (weight / 70)^0.75).
+sizeOf <- function(drug, pt, adjustToFFM)
+  switch(drug,
+         sufentanil = pkSizeFactors(pt$weight, pt$height, pt$age, pt$sex, adjustToFFM, legacyVolume = 1),
+         remimazolam = pkSizeFactors(pt$weight, pt$height, pt$age, pt$sex, adjustToFFM,
+                                     legacyClearance = (pt$weight / 70)^0.75))
+
+# Which published model the drug function used for this patient.
+branchOf <- function(drug, reference)
+  switch(drug,
+         propofol = "eleveld2018",
+         remifentanil = if (startsWith(reference, "Kim TK")) "kim2017" else "eleveld2017",
+         sufentanil = "gepts1995",
+         remimazolam = "eleveld2025")
+
+# Every (drug, patient, adjustToFFM) the fixtures cover: both switch positions
+# for a drug that reads it, TRUE alone for one that ignores it.
+modelCombos <- list()
+for (drug in DRUGS) for (pt in PATIENTS) for (ffm in if (DRUG_SPECS[[drug]]$ffm) c(TRUE, FALSE) else TRUE)
+  modelCombos[[length(modelCombos) + 1]] <- list(drug = drug, pt = pt, adjustToFFM = ffm)
+
 # ---------------------------------------------------------------------------
 # 1. models.json
 
-modelEntry <- function(drug, pt) {
-  PK <- pkOf(drug, pt)
+modelEntry <- function(drug, pt, adjustToFFM = TRUE) {
+  PK <- pkOf(drug, pt, adjustToFFM)
   k <- PK$PK[[1]]
-  X <- do.call(drug, c(covariatesOf(pt), list(adjustToFFM = TRUE)))   # the drug function itself
+  X <- do.call(drug, c(covariatesOf(pt), list(adjustToFFM = adjustToFFM)))   # the drug function itself
   bmi <- pt$weight / (pt$height / 100)^2
-  branch <- if (drug == "remifentanil") { if (bmi < 30) "eleveld2017" else "kim2017" } else "eleveld2018"
   list(
     drug = drug,
     patientId = pt$id,
     patient = covariatesOf(pt),
-    adjustToFFM = TRUE,
+    adjustToFFM = adjustToFFM,
     bmi = bmi,
-    branch = branch,
+    branch = branchOf(drug, PK$reference),
     tPeak = PK$tPeak,
     tPeakRoute = PK$tPeakRoute,
     reference = PK$reference,
@@ -113,36 +151,41 @@ modelEntry <- function(drug, pt) {
     drugFunction = list(
       returns = I(names(X)),
       PK = X$PK[[1]],
+      ke0 = if (is.null(X$ke0)) NULL else X$ke0,
+      size = if (DRUG_SPECS[[drug]]$ffm) sizeOf(drug, pt, adjustToFFM) else NULL,
       exposesIntermediates = FALSE,
       intermediateNames = I(character(0))
     ),
     # The FULL default PK set as getDrugPK() builds it (every field).
     pk = k,
     # The model block exactly as tciApiModel() returns it (with hash).
-    model = tciApiModel(drug, pt$weight, pt$height, pt$age, pt$sex, TRUE)
+    model = tciApiModel(drug, pt$weight, pt$height, pt$age, pt$sex, adjustToFFM)
   )
 }
 
 message("models.json ...")
 modelEntries <- list()
-for (drug in DRUGS) for (pt in PATIENTS) modelEntries[[length(modelEntries) + 1]] <- modelEntry(drug, pt)
+for (cmb in modelCombos) modelEntries[[length(modelEntries) + 1]] <- modelEntry(cmb$drug, cmb$pt, cmb$adjustToFFM)
 models <- list(
   generatedAt = GENERATED_AT, stanpumpRCommit = COMMIT, stanpumpRVersion = VERSION, rVersion = R.version.string,
   notes = paste(
-    "One entry per drug x patient.  `pk` is the complete default PK set from getDrugPK(drug, weight, height, age, sex,",
-    "getDrugDefaults(drug), adjustToFFM = TRUE)$PK$default: v1..cl3 come from the drug function (R/drugs_propofol.R,",
-    "R/drugs_remifentanil.R); k10 = cl1/v1, k12 = cl2/v1, k13 = cl3/v1, k21 = cl2/v2, k31 = cl3/v3; lambda_1 >= lambda_2 >=",
+    "One entry per drug x patient, and for sufentanil and remimazolam per adjustToFFM (TRUE and FALSE).  `pk` is the complete",
+    "default PK set from getDrugPK(drug, weight, height, age, sex, getDrugDefaults(drug), adjustToFFM)$PK$default: v1..cl3",
+    "come from the drug function (R/drugs_propofol.R, R/drugs_remifentanil.R, R/drugs_sufentanil.R, R/drugs_remimazolam.R);",
+    "`drugFunction.size` is pkSizeFactors() for the two drugs that scale with it (R/pkSizeFactors.R); k10 = cl1/v1, k12 = cl2/v1, k13 = cl3/v1, k21 = cl2/v2, k31 = cl3/v3; lambda_1 >= lambda_2 >=",
     "lambda_3 are the roots of cube(k10, k12, k13, k21, k31) (R/cube.R, trigonometric solution of the cubic);",
     "p_coef_bolus_l1 = (k21 - l1)(k31 - l1) / ((l1 - l2)(l1 - l3) v1) and cyclic; p_coef_infusion_li = p_coef_bolus_li / li;",
-    "ke0 is solved from tPeak (see ke0-solve.json); e_coef_bolus_li = p_coef_bolus_li * ke0 / (ke0 - li),",
+    "ke0 is solved from tPeak, or for remimazolam supplied by the drug function and tPeak solved from it (see ke0-solve.json);",
+    "ke0 is then separateEigenvalues(ke0, lambdas); e_coef_bolus_li = p_coef_bolus_li * ke0 / (ke0 - li),",
     "e_coef_bolus_ke0 = -(sum of the three), e_coef_infusion_li = e_coef_bolus_li / li, e_coef_infusion_ke0 = e_coef_bolus_ke0 / ke0.",
-    "All ka_*, bioavailability_*, tlag_* and *_PO/IM/IN/SL/RA/PO2 coefficients are 0 for these two IV drugs.",
+    "All ka_*, bioavailability_*, tlag_* and *_PO/IM/IN/SL/RA/PO2 coefficients are 0 for these IV drugs.",
     "`model` is tciApiModel()'s block verbatim; `model.hash` is md5 of jsonlite::toJSON(parameters rounded to signif(., 10),",
     "auto_unbox = TRUE, digits = NA) followed by a newline (writeLines), i.e. tools::md5sum of that file.",
-    "`branch`: remifentanil uses Eleveld 2017 below BMI 30 and Kim 2017 at or above (BMI = weight / (height/100)^2);",
-    "propofol is always Eleveld 2018.  Neither drug function exposes its intermediate quantities (FFM, maturation",
-    "factors, KMAT, ksex, ...): they return only PK, tPeak, reference (remifentanil also MEAC, typical, upperTypical,",
-    "lowerTypical).  adjustToFFM is accepted and ignored by both (each carries its own fat-free-mass covariate)."),
+    "`branch`: remifentanil uses Kim 2017 at a BMI of 30 or more from REMIFENTANIL_KIM_MIN_AGE, unless Kim's model gives a",
+    "non-positive parameter for the patient, and Eleveld 2017 otherwise; propofol is Eleveld 2018, sufentanil Gepts 1995,",
+    "remimazolam Eleveld 2025.  adjustToFFM is accepted and ignored by propofol and remifentanil (each carries its own",
+    "fat-free-mass covariate); sufentanil and remimazolam scale with pkSizeFactors() (volumes by the fat-free mass over the",
+    "reference man's, clearances by that ratio ^ 0.75) and with adjustToFFM = FALSE use their legacy factors."),
   patients = PATIENTS,
   entries = modelEntries
 )
@@ -151,184 +194,97 @@ writeJSON(models, "models.json")
 # ---------------------------------------------------------------------------
 # 2. ke0-solve.json
 
-# A pure-R transcription of R's Brent_fmin (src/library/stats/src/optimize.c,
-# the Netlib FMIN of Forsythe, Malcolm & Moler), used to check that the
-# description in `notes` reproduces stats::optimize() bit for bit.
-brentFmin <- function(f, ax, bx, tol) {
-  cgold <- (3 - sqrt(5)) * 0.5
-  eps <- sqrt(.Machine$double.eps)
-  a <- ax; b <- bx
-  v <- a + cgold * (b - a); w <- v; x <- v
-  d <- 0; e <- 0
-  fx <- f(x); fv <- fx; fw <- fx
-  tol3 <- tol / 3
-  repeat {
-    xm <- (a + b) * 0.5
-    tol1 <- eps * abs(x) + tol3
-    t2 <- tol1 * 2
-    if (abs(x - xm) <= t2 - (b - a) * 0.5) break
-    p <- 0; q <- 0; r <- 0
-    if (abs(e) > tol1) {
-      r <- (x - w) * (fx - fv)
-      q <- (x - v) * (fx - fw)
-      p <- (x - v) * q - (x - w) * r
-      q <- (q - r) * 2
-      if (q > 0) p <- -p else q <- -q
-      r <- e
-      e <- d
-    }
-    if (abs(p) >= abs(q * 0.5 * r) || p <= q * (a - x) || p >= q * (b - x)) {
-      e <- if (x < xm) b - x else a - x
-      d <- cgold * e
-    } else {
-      d <- p / q
-      u <- x + d
-      if (u - a < t2 || b - u < t2) {
-        d <- tol1
-        if (x >= xm) d <- -d
-      }
-    }
-    if (abs(d) >= tol1) u <- x + d
-    else if (d > 0) u <- x + tol1
-    else u <- x - tol1
-    fu <- f(u)
-    if (fu <= fx) {
-      if (u < x) b <- x else a <- x
-      v <- w; w <- x; x <- u
-      fv <- fw; fw <- fx; fx <- fu
-    } else {
-      if (u < x) a <- u else b <- u
-      if (fu <= fw || w == x) {
-        v <- w; fv <- fw
-        w <- u; fw <- fu
-      } else if (fu <= fv || v == x || v == w) {
-        v <- u; fv <- fu
-      }
-    }
-  }
-  x
-}
-OPT_TOL <- .Machine$double.eps^0.25
-
-# tPeakError() with the inner stats::optimize() replaced by brentFmin().
-tPeakErrorBrent <- function(lambda_4, tPeak, p1, p2, p3, l1, l2, l3) {
-  e1 <- p1 / (lambda_4 - l1) * lambda_4
-  e2 <- if (l2 > 0) p2 / (lambda_4 - l2) * lambda_4 else 0
-  e3 <- if (l3 > 0) p3 / (lambda_4 - l3) * lambda_4 else 0
-  e4 <- -e1 - e2 - e3
-  predPeak <- brentFmin(function(t) -CE(t, e1, e2, e3, e4, l1, l2, l3, lambda_4), 0, 100, OPT_TOL)
-  (tPeak - predPeak)^2
+# getDrugPK() (R/getDrugPK.R) has two IV cases.  A drug with a tPeak and no ke0
+# (propofol, remifentanil, sufentanil) gets ke0 <- ke0FromTPeakBolus(tPeak,
+# p_coef_bolus, lambda): uniroot() of effectSitePeakTime(ke0) - tPeak inside a
+# bracket widened by tens from [1e-3, 1].  A drug that supplies ke0
+# (remimazolam) keeps it, and its tPeak is effectSitePeakTime() at that ke0.
+# Either way ke0 then goes through separateEigenvalues(ke0, lambdas).
+ke0Bracket <- function(tPeak, pc, lam) {
+  peakAt <- function(z) effectSitePeakTime(pc, lam, z)
+  lo <- 1e-3; hi <- 1
+  while (peakAt(lo) < tPeak && lo > KE0_SOLVE_MIN) lo <- lo / 10
+  while (peakAt(hi) > tPeak && hi < KE0_SOLVE_MAX) hi <- hi * 10
+  list(lower = lo, upper = hi, peakAtLower = peakAt(lo), peakAtUpper = peakAt(hi))
 }
 
-ke0Entry <- function(drug, pt) {
-  PK <- pkOf(drug, pt)
+# The search window effectSitePeakTime() uses: min(4000, 20 / slowest rate).
+peakWindow <- function(lam, z) min(4000, 20 / min(c(lam[lam > 0], separateEigenvalues(z, lam[lam > 0]))))
+
+ke0Entry <- function(drug, pt, adjustToFFM) {
+  PK <- pkOf(drug, pt, adjustToFFM)
   k <- PK$PK[[1]]
-  tPeak <- PK$tPeak
+  X <- do.call(drug, c(covariatesOf(pt), list(adjustToFFM = adjustToFFM)))
   pc <- c(k$p_coef_bolus_l1, k$p_coef_bolus_l2, k$p_coef_bolus_l3)
   lam <- c(k$lambda_1, k$lambda_2, k$lambda_3)
   ke0 <- k$ke0
-
-  # The solve, exactly as getDrugPK() does it.
-  ke0Resolved <- stats::optimize(tPeakError, c(0, 200), tPeak, pc[1], pc[2], pc[3], lam[1], lam[2], lam[3])$minimum
-  # The same with the pure-R Brent (outer and inner).
-  ke0Brent <- brentFmin(function(z) tPeakErrorBrent(z, tPeak, pc[1], pc[2], pc[3], lam[1], lam[2], lam[3]), 0, 200, OPT_TOL)
-
-  # Effect-site bolus coefficients at the solved ke0 (what tPeakError builds).
+  supplied <- !is.null(X$ke0) && X$ke0 > 0
+  out <- list(drug = drug, patientId = pt$id, patient = covariatesOf(pt), adjustToFFM = adjustToFFM,
+              solve = if (supplied) "tPeakFromKe0" else "ke0FromTPeak",
+              tPeak = PK$tPeak, inputs = list(p_coef_bolus = pc, lambda = lam), ke0 = ke0)
+  if (supplied) {
+    out$modelKe0 <- X$ke0
+    out$tPeakResolved <- effectSitePeakTime(pc, lam, X$ke0)
+    out$resolveIdentical <- identical(out$tPeakResolved, PK$tPeak)
+  } else {
+    out$bracket <- ke0Bracket(PK$tPeak, pc, lam)
+    out$ke0BeforeSeparation <- ke0FromTPeakBolus(PK$tPeak, pc, lam)
+    out$resolveIdentical <- identical(separateEigenvalues(out$ke0BeforeSeparation, lam), ke0)
+    # The ke0 whose exact peak time (root of dCe/dt) equals tPeak.
+    peakTimeFor <- function(z) {
+      e <- pc * z / (z - lam); e4 <- -sum(e)
+      stats::uniroot(function(t) -sum(c(e, e4) * c(lam, z) * exp(-c(lam, z) * t)), c(1e-6, 100), tol = 1e-14)$root
+    }
+    out$ke0Exact <- stats::uniroot(function(z) peakTimeFor(z) - PK$tPeak, c(ke0 * 0.5, ke0 * 2), tol = 1e-14)$root
+    out$ke0ExactRelativeDifference <- (out$ke0Exact - ke0) / ke0
+  }
+  # Effect-site bolus coefficients at ke0, as getDrugPK() builds them, and the peak.
   ec <- pc / (ke0 - lam) * ke0
   ec4 <- -sum(ec)
-  ceUnit <- function(t) CE(t, ec[1], ec[2], ec[3], ec4, lam[1], lam[2], lam[3], ke0)
-  # Round trip 1: the peak as the INNER optimizer finds it (default tol).
-  inner <- stats::optimize(CE, c(0, 100), ec[1], ec[2], ec[3], ec4, lam[1], lam[2], lam[3], ke0, maximum = TRUE)
-  # Round trip 2: the peak to machine precision (root of dCe/dt).
-  dCe <- function(t) -sum(c(ec, ec4) * c(lam, ke0) * exp(-c(lam, ke0) * t))
-  peakExact <- stats::uniroot(dCe, c(1e-6, 100), tol = 1e-14)$root
-  # A "perfect" ke0: the one whose exact peak time equals tPeak.
-  peakTimeFor <- function(z) {
-    e <- pc / (z - lam) * z; e4 <- -sum(e)
-    stats::uniroot(function(t) -sum(c(e, e4) * c(lam, z) * exp(-c(lam, z) * t)), c(1e-6, 100), tol = 1e-14)$root
-  }
-  ke0Exact <- stats::uniroot(function(z) peakTimeFor(z) - tPeak, c(ke0 * 0.5, ke0 * 2), tol = 1e-14)$root
-
-  factors <- c(0.5, 0.8, 0.95, 1, 1.05, 1.25, 2)
-  samples <- lapply(factors, function(f) {
-    z <- ke0 * f
-    e <- pc / (z - lam) * z; e4 <- -sum(e)
-    list(ke0 = z,
-         predPeak = stats::optimize(CE, c(0, 100), e[1], e[2], e[3], e4, lam[1], lam[2], lam[3], z, maximum = TRUE)$maximum,
-         objective = tPeakError(z, tPeak, pc[1], pc[2], pc[3], lam[1], lam[2], lam[3]))
-  })
-
-  list(
-    drug = drug, patientId = pt$id, patient = covariatesOf(pt),
-    tPeak = tPeak,
-    inputs = list(p_coef_bolus = pc, lambda = lam),
-    ke0 = ke0,
-    ke0Resolved = ke0Resolved,
-    resolveIdentical = identical(ke0, ke0Resolved),
-    ke0PureRBrent = ke0Brent,
-    pureRBrentIdentical = identical(ke0, ke0Brent),
-    objectiveAtKe0 = tPeakError(ke0, tPeak, pc[1], pc[2], pc[3], lam[1], lam[2], lam[3]),
-    e_coef_bolus = c(ec, ec4),
-    roundTrip = list(
-      peakTimeInnerOptimize = inner$maximum,
-      ceAtPeakInnerOptimize = inner$objective,
-      peakTimeExact = peakExact,
-      ceAtPeakExact = ceUnit(peakExact),
-      peakTimeMinusTPeak = peakExact - tPeak
-    ),
-    ke0Exact = ke0Exact,
-    ke0ExactRelativeDifference = (ke0Exact - ke0) / ke0,
-    objectiveSamples = samples
-  )
+  out$e_coef_bolus <- c(ec, ec4)
+  peak <- effectSitePeakTime(pc, lam, ke0)
+  out$roundTrip <- list(
+    window = peakWindow(lam, ke0),
+    peakTime = peak,
+    ceAtPeak = CE(peak, ec[1], ec[2], ec[3], ec4, lam[1], lam[2], lam[3], ke0),
+    peakTimeMinusTPeak = peak - PK$tPeak)
+  out$peakSamples <- lapply(c(0.5, 0.8, 0.95, 1, 1.05, 1.25, 2), function(f)
+    list(ke0 = ke0 * f, window = peakWindow(lam, ke0 * f), peakTime = effectSitePeakTime(pc, lam, ke0 * f)))
+  out
 }
 
 message("ke0-solve.json ...")
 ke0Entries <- list()
-for (drug in DRUGS) for (pt in PATIENTS) ke0Entries[[length(ke0Entries) + 1]] <- ke0Entry(drug, pt)
+for (cmb in modelCombos) ke0Entries[[length(ke0Entries) + 1]] <- ke0Entry(cmb$drug, cmb$pt, cmb$adjustToFFM)
 ke0Notes <- paste(
-  "HOW ke0 IS DERIVED FROM tPeak (R/getDrugPK.R).  For an IV drug (tPeakRoute 'IV', no X$ke0 supplied) getDrugPK() runs",
-  "  ke0 <- stats::optimize(tPeakError, c(0, 200), tPeak, p_coef_bolus_l1, p_coef_bolus_l2, p_coef_bolus_l3, lambda_1, lambda_2, lambda_3)$minimum",
-  "i.e. Brent's fmin on the interval [0, 200] /min with the DEFAULT tolerance tol = .Machine$double.eps^0.25 = 2^-13 =",
-  "0.0001220703125 (absolute, in ke0 units).  The objective tPeakError(lambda_4 = ke0, tPeak, p1, p2, p3, l1, l2, l3) is:",
-  "  e_i = p_i * ke0 / (ke0 - l_i) for the three plasma exponentials (e_2, e_3 are 0 when l_2, l_3 are 0), e_4 = -(e_1 + e_2 + e_3);",
-  "  predPeak = stats::optimize(CE, c(0, 100), e_1, e_2, e_3, e_4, l_1, l_2, l_3, ke0, maximum = TRUE)$maximum, where",
-  "  CE(t) = e_1 exp(-l_1 t) + e_2 exp(-l_2 t) + e_3 exp(-l_3 t) + e_4 exp(-ke0 t) is the effect-site concentration after a",
-  "  UNIT IV BOLUS (the plasma curve is the bolus response sum p_i exp(-l_i t), p_i = p_coef_bolus_li);",
-  "  return (tPeak - predPeak)^2.",
-  "So it is a NESTED Brent minimisation: the inner optimize (maximum = TRUE, interval [0, 100] min, same default tol) finds",
-  "the peak time of the unit-bolus effect-site curve for a trial ke0; the outer one minimises the squared miss of tPeak.",
-  "stats::optimize(maximum = TRUE) minimises function(arg) -f(arg, ...) and returns list(maximum = argmin, objective = f(argmin)).",
-  "The C routine is Brent_fmin() in R's src/library/stats/src/optimize.c (Netlib FMIN, Forsythe-Malcolm-Moler):",
-  "  c = (3 - sqrt(5))/2; eps = sqrt(DBL_EPSILON); x = v = w = a + c (b - a); fx = f(x); d = e = 0; tol3 = tol/3;",
-  "  loop: xm = (a+b)/2; tol1 = eps |x| + tol3; t2 = 2 tol1; stop when |x - xm| <= t2 - (b - a)/2;",
-  "  if |e| > tol1 fit a parabola through (v,fv),(w,fw),(x,fx): r = (x-w)(fx-fv); q = (x-v)(fx-fw); p = (x-v) q - (x-w) r;",
-  "  q = 2 (q - r); if q > 0 then p = -p else q = -q; r = e; e = d;",
-  "  golden-section step (e = (x < xm ? b : a) - x; d = c e) when |p| >= |q r / 2| or p <= q (a - x) or p >= q (b - x),",
-  "  else parabolic step d = p/q, u = x + d, and if u - a < t2 or b - u < t2 then d = (x >= xm ? -tol1 : tol1);",
-  "  u = x + d if |d| >= tol1 else x +/- tol1 (sign of d); fu = f(u);",
-  "  if fu <= fx: (u < x ? b = x : a = x); v = w; w = x; x = u; fv = fw; fw = fx; fx = fu;",
-  "  else: (u < x ? a = u : b = u); if fu <= fw or w == x: v = w, fv = fw, w = u, fw = fu; else if fu <= fv or v == x or v == w: v = u, fv = fu.",
-  "  return x.",
-  "The pure-R transcription brentFmin() in generate.R, applied to BOTH levels, reproduced every ke0 in this file bit for bit",
-  "(see pureRBrentIdentical), so a JavaScript port of the same algorithm with the same tolerance should match R's ke0 to",
-  "within a few ulps whenever its exp() agrees with R's libm; a last-bit difference in exp() can in principle change a branch",
-  "and move the result by up to the stopping width (about 2 tol1 = 2 (sqrt(eps) |ke0| + tol/3), i.e. ~8e-5 absolute).",
-  "ACHIEVABLE ACCURACY WITHOUT PORTING BRENT: because the outer tolerance is absolute 1.22e-4 and the inner peak time is itself",
-  "only resolved to ~4e-5 min, R's ke0 is NOT the exact root.  `ke0Exact` is the ke0 whose exact (uniroot, tol 1e-14) peak",
-  "time equals tPeak; `ke0ExactRelativeDifference` shows how far R's value is from it (of order 1e-5 to 1e-4 relative).",
-  "A port using a different (better) optimizer should therefore expect agreement with R's ke0 only to that order; to validate",
-  "coefficients and controller output independently of the solve, inject R's ke0 from models.json.",
-  "ROUND TRIP: `roundTrip.peakTimeInnerOptimize` is the inner optimizer's peak time for R's ke0 (what the solve 'saw');",
-  "`roundTrip.peakTimeExact` is the true peak time of the unit-bolus Ce curve for that ke0; `ceAtPeak*` is Ce there (its",
-  "reciprocal is getDrugPK()'s vdPeakEffect).  `objectiveSamples` give tPeakError() and the inner predPeak at ke0 x",
-  "{0.5, 0.8, 0.95, 1, 1.05, 1.25, 2} so a port can check its objective function (including the inner optimizer) directly.",
-  "Both drugs: tPeak = 1.6 min (propofol: Schnider 1999; remifentanil: 'Opioid simulation spreadsheet'), tPeakRoute IV.")
+  "HOW ke0 AND tPeak ARE DERIVED (R/getDrugPK.R, R/metaboliteCoefficients.R).  `solve` names the case.",
+  "ke0FromTPeak (propofol, remifentanil, sufentanil: the drug function gives tPeak): ke0FromTPeakBolus(tPeak, p, lambda),",
+  "where p = p_coef_bolus and peakAt(z) = effectSitePeakTime(p, lambda, z).  Bracket: lo = 1e-3, hi = 1; while",
+  "peakAt(lo) < tPeak and lo > KE0_SOLVE_MIN (1e-12) lo = lo / 10; while peakAt(hi) > tPeak and hi < KE0_SOLVE_MAX (1e6)",
+  "hi = hi * 10; if peakAt(lo) < tPeak return lo; if peakAt(hi) > tPeak return hi; else",
+  "stats::uniroot(function(z) peakAt(z) - tPeak, c(lo, hi), tol = .Machine$double.eps^0.5)$root (R_zeroin2 in R's",
+  "src/library/stats/src/zeroin.c, maxiter 1000, f(lo) and f(hi) evaluated first).  `bracket` records lo, hi and peakAt there;",
+  "`ke0BeforeSeparation` is that root.  tPeakFromKe0 (remimazolam: the drug function gives ke0 = exp(-1.20976) and no tPeak):",
+  "ke0 is the model's (`modelKe0`) and tPeak = effectSitePeakTime(p, lambda, ke0) (`tPeakResolved`).",
+  "Both: ke0 <- separateEigenvalues(ke0, lambda) (a relative 1 + 1e-8 nudge only if |ke0 - lambda_i| < 1e-10 max(ke0, lambda_i);",
+  "never fires here), which is `ke0`.",
+  "effectSitePeakTime(coef, lambda, ke0, upper = 4000): use = lambda > 0; ke0 = separateEigenvalues(ke0, lambda[use]);",
+  "e = coef * ke0 / (ke0 - lambda) (note the order: (coef * ke0) / (ke0 - lambda), unlike getDrugPK()'s p / (ke0 - l) * ke0);",
+  "upper = min(upper, 20 / min(c(lambda, ke0))); stats::optimize(function(t) sum(e * exp(-lambda * t)) - sum(e) * exp(-ke0 * t),",
+  "c(0, upper), maximum = TRUE)$maximum, i.e. Brent_fmin on the negated function over [0, upper] with the default",
+  "tol = .Machine$double.eps^0.25.  R's sum() accumulates in long double.  `roundTrip.window` is that upper,",
+  "`roundTrip.peakTime` the peak at `ke0`, `ceAtPeak` the unit-bolus Ce there; `peakSamples` give effectSitePeakTime() at",
+  "ke0 x {0.5, 0.8, 0.95, 1, 1.05, 1.25, 2} so a port can check it directly.  `ke0Exact` is the ke0 whose exact peak time",
+  "(uniroot on dCe/dt, tol 1e-14) equals tPeak; `ke0ExactRelativeDifference` shows how far the library's is from it.",
+  "This replaced the nested optimize() of tPeakError() on 2026-10-17 (stanpumpR f5b2f0f, 'exact IV ke0 solve').")
 writeJSON(list(generatedAt = GENERATED_AT, stanpumpRCommit = COMMIT, stanpumpRVersion = VERSION,
                rVersion = R.version.string,
-               optimizer = list(
-                 outer = list(fn = "stats::optimize", objective = "tPeakError", interval = c(0, 200), tol = OPT_TOL, maximum = FALSE, result = "$minimum"),
-                 inner = list(fn = "stats::optimize", objective = "CE", interval = c(0, 100), tol = OPT_TOL, maximum = TRUE, result = "$maximum"),
-                 brentGoldenConstant = (3 - sqrt(5)) * 0.5, brentEps = sqrt(.Machine$double.eps)),
+               solver = list(
+                 root = list(fn = "stats::uniroot", tol = .Machine$double.eps^0.5, maxiter = 1000L,
+                             bracketStart = c(1e-3, 1), bracketMin = KE0_SOLVE_MIN, bracketMax = KE0_SOLVE_MAX),
+                 peak = list(fn = "stats::optimize", tol = .Machine$double.eps^0.25, interval = "c(0, min(4000, 20 / min(c(lambda, ke0))))",
+                             maximum = TRUE, result = "$maximum"),
+                 separateEigenvalues = list(threshold = 1e-10, nudge = 1e-8)),
                notes = ke0Notes, entries = ke0Entries), "ke0-solve.json")
 
 # ---------------------------------------------------------------------------
@@ -498,8 +454,10 @@ for (drug in DRUGS) {
 }
 
 for (drug in DRUGS) {
+  spec <- DRUG_SPECS[[drug]]
   inf <- defaultInfusate(drug)
   CT <- defaultTarget(drug)
+  tPeak <- pkOf(drug, P70)$tPeak
   base <- massUnitOf(drug)
   L20 <- loops20[[drug]]
   n20 <- length(L20$requests)
@@ -511,7 +469,7 @@ for (drug in DRUGS) {
 
   # (a) empty history, loading from zero
   addCase(paste0("a_empty_history_", drug), drug, makeRequest(drug, 0, id("a")),
-          "Empty history: the first plan from an empty body (loading, capped by maxRate for propofol).")
+          "Empty history: the first plan from an empty body (loading; capped by maxRate where the loading rate exceeds it).")
 
   # (b) literally: 1200 mL/hr for 10 s then 0 for 5 s, now = +15 s
   addCase(paste0("b_after_1200_for_10s_then_off_5s_", drug), drug,
@@ -528,18 +486,18 @@ for (drug in DRUGS) {
 
   # (c) maintenance at 20 min
   rc <- addCase(paste0("c_maintenance_20min_", drug), drug, withId(maint, id("c")),
-                "The request formed at the 20 min mark of the closed loop (propofol 1%/remifentanil 50 mcg/mL, 1200 mL/hr cap, minRate 0.1, resolution 0.1, latency 1.5, interval 10); history = every rate change the pump recorded.")
+                sprintf("The request formed at the 20 min mark of the closed loop (%g %s, 1200 mL/hr cap, minRate 0.1, resolution 0.1, latency 1.5, interval 10); history = every rate change the pump recorded.", inf$concentration, inf$units))
   running <- tail(Filter(function(e) !is.null(e$rate), maint$history), 1)[[1]]$rate
 
   # (d) target lowered
-  reqd <- withId(maint, id("d")); reqd$target$value <- if (drug == "propofol") 2 else 2
-  addCase(paste0("d_target_lowered_", drug), drug, reqd, "Same state as (c), target lowered (3 -> 2 mcg/mL propofol; 4 -> 2 ng/mL remifentanil).")
+  reqd <- withId(maint, id("d")); reqd$target$value <- spec$lowered
+  addCase(paste0("d_target_lowered_", drug), drug, reqd, sprintf("Same state as (c), target lowered (%g -> %g %s).", CT, spec$lowered, spec$conc))
   # (e) target raised
-  reqe <- withId(maint, id("e")); reqe$target$value <- if (drug == "propofol") 4 else 6
-  addCase(paste0("e_target_raised_", drug), drug, reqe, "Same state as (c), target raised (3 -> 4 mcg/mL propofol; 4 -> 6 ng/mL remifentanil).")
+  reqe <- withId(maint, id("e")); reqe$target$value <- spec$raised
+  addCase(paste0("e_target_raised_", drug), drug, reqe, sprintf("Same state as (c), target raised (%g -> %g %s).", CT, spec$raised, spec$conc))
   # (f) hand bolus 30 s ago
   reqf <- withId(maint, id("f"))
-  bol <- if (drug == "propofol") list(amount = 20, units = "mg") else list(amount = 50, units = "mcg")
+  bol <- list(amount = spec$bolus, units = spec$mass)
   reqf$history[[length(reqf$history) + 1]] <- list(time = atSec(maintSec - 30), bolus = bol$amount, units = bol$units, source = "manual")
   addCase(paste0("f_hand_bolus_30s_ago_", drug), drug, reqf,
           sprintf("Same state as (c) plus a hand bolus of %g %s at now - 30 s, appended at the END of the history array (the server sorts by time).", bol$amount, bol$units))
@@ -590,10 +548,11 @@ for (drug in DRUGS) {
   addCase(paste0("p_currentRate_mismatch_RATE_MISMATCH_", drug), drug, reqp,
           sprintf("Same state as (c); the history says %g mL/hr is running, pump.currentRate says %g.", running, running + 5))
   # (s) interval 30 s; (s2) interval 40 s
+  longAt <- tPeak * 60 / 3
   addCase(paste0("s_interval_30s_", drug), drug, makeRequest(drug, 0, id("s"), interval = 30),
-          "Interval 30 s from an empty history.  NOTE: INTERVAL_LONG fires only above tPeak*60/3 = 32 s for both drugs (tPeak 1.6 min), so 30 s does NOT warn; see s2.")
-  addCase(paste0("s2_interval_40s_INTERVAL_LONG_", drug), drug, makeRequest(drug, 0, id("s2"), interval = 40),
-          "Interval 40 s from an empty history: above tPeak*60/3 = 32 s, so INTERVAL_LONG.")
+          sprintf("Interval 30 s from an empty history.  INTERVAL_LONG fires only above tPeak*60/3 = %.4g s (tPeak %.4g min), so 30 s %s.", longAt, tPeak, if (30 > longAt) "warns" else "does NOT warn"))
+  addCase(paste0("s2_interval_40s_", if (40 > longAt) "INTERVAL_LONG_" else "", drug), drug, makeRequest(drug, 0, id("s2"), interval = 40),
+          sprintf("Interval 40 s from an empty history: %s tPeak*60/3 = %.4g s, so %s.", if (40 > longAt) "above" else "below", longAt, if (40 > longAt) "INTERVAL_LONG" else "no INTERVAL_LONG"))
   # (t) latency 6 of 10
   addCase(paste0("t_latency_6_of_10_LATENCY_LONG_", drug), drug, makeRequest(drug, 0, id("t"), latency = 6),
           "Latency 6 s with interval 10 s: more than half, LATENCY_LONG.")
@@ -602,12 +561,21 @@ for (drug in DRUGS) {
   addCase(paste0("u_target_above_Upper_TARGET_HIGH_", drug), drug, makeRequest(drug, 0, id("u"), target = 2 * up),
           sprintf("Target %g %s, above the library's Upper (%g) and below 5 x Upper: TARGET_HIGH.  (Remifentanil's default 4 ng/mL is itself above Upper = 2, so every remifentanil case carries TARGET_HIGH.)", 2 * up, concUnitsOf(drug), up))
   # (v) mass-rate pump units, no infusate
-  massUnits <- if (drug == "propofol") "mg/min" else "mcg/min"
+  massUnits <- paste0(spec$mass, "/min")
   massMax <- 1200 * inf$concentration / 60     # the same ceiling as 1200 mL/hr of the default syringe
   addCase(paste0("v_mass_rate_units_no_infusate_", drug), drug,
           makeRequest(drug, 0, id("v"), infusate = NULL, rateUnits = massUnits, maxRate = massMax,
                       minRate = j15(0.1 * inf$concentration / 60), rateResolution = j15(0.1 * inf$concentration / 60)),
           sprintf("pump.rateUnits %s with no infusate (no mlPerHour / volumeMl in the response); maxRate %g = 1200 mL/hr of the default syringe.", massUnits, massMax))
+  # (w) adjustToFFM = FALSE, for a drug that reads it
+  if (spec$ffm) {
+    reqw <- makeRequest(drug, 0, id("w"), patient = PATIENTS[[4]], options = list(adjustToFFM = FALSE))
+    addCase(paste0("w_adjustToFFM_false_120kg_", drug), drug, reqw,
+            "120 kg, 175 cm, 45 y female, options.adjustToFFM false: the legacy size factors instead of fat-free mass; empty history.")
+    reqw2 <- withId(reqw, id("w2")); reqw2$options <- NULL
+    addCase(paste0("w2_adjustToFFM_true_120kg_", drug), drug, reqw2,
+            "As (w) without options, so adjustToFFM is TRUE (fat-free-mass scaling).")
+  }
 }
 # (q) 100 kg patient on remifentanil (Kim 2017)
 addCase("q_100kg_remifentanil_Kim", "remifentanil", makeRequest("remifentanil", 0, "fx-q-remifentanil", patient = P100),
@@ -700,7 +668,8 @@ writeJSON(list(
     "before the call), so a port can replay `request` verbatim.  Error cases: `status`, `code`, `pointer`, `message` are the",
     "tci_api_error condition's fields; the HTTP body would be {apiVersion, requestId, errors: [{code, message, pointer}], server}.",
     "Base pump for every success case unless its request says otherwise: mL/hr, maxRate 1200, minRate 0.1, rateResolution 0.1,",
-    "latency 1.5 s, interval 10 s; propofol 10 mg/mL to 3 mcg/mL effect, remifentanil 50 mcg/mL to 4 ng/mL effect; 70 kg 170 cm",
+    "latency 1.5 s, interval 10 s; propofol 10 mg/mL to 3 mcg/mL effect, remifentanil 50 mcg/mL to 4 ng/mL, sufentanil 5 mcg/mL",
+    "to 0.1 ng/mL, remimazolam 2.5 mg/mL to 0.5 mcg/mL; 70 kg 170 cm",
     "50 y male.  The START of every clock is 2026-10-11T14:00:00.000Z."),
   cases = cases, errors = errors), "rate-cases.json")
 
@@ -737,6 +706,13 @@ traces[[5]] <- traceOut("5_propofol_cap300", "As trace 1 with maxRate 300 mL/hr:
 message("  trace 6"); L <- runLoop("propofol", minutes = 30, latency = 1.5, actualLatency = 3.0, idPrefix = "cl6")
 s6 <- spec1; s6$actualLatency <- 3.0
 traces[[6]] <- traceOut("6_propofol_declared_latency_1.5_actual_3.0", "As trace 1 but the pump actually switches 3.0 s after each request while the request declares 1.5 s: the loading rate runs 1.5 s too long and the effect site overshoots (docs/tci-api.md section 5.5).", L, s6)
+message("  trace 7"); L <- runLoop("sufentanil", minutes = 30, idPrefix = "cl7")
+s7 <- spec1; s7$drug <- "sufentanil"; s7$target <- defaultTarget("sufentanil"); s7$infusate <- defaultInfusate("sufentanil")
+traces[[7]] <- traceOut("7_sufentanil_0.1_cap1200", "Sufentanil 0.1 ng/mL effect, 5 mcg/mL, 1200 mL/hr cap, latency 1.5, interval 10, 30 min (tPeak 5.6 min).", L, s7)
+message("  trace 8"); L <- runLoop("remimazolam", minutes = 30, targetSteps = list(list(min = 15, value = 1)), idPrefix = "cl8")
+s8 <- spec1; s8$drug <- "remimazolam"; s8$target <- defaultTarget("remimazolam"); s8$infusate <- defaultInfusate("remimazolam")
+s8$targetSteps <- list(list(minute = 15, value = 1))
+traces[[8]] <- traceOut("8_remimazolam_0.5_then_1_at_15min", "Remimazolam 0.5 mcg/mL effect, 2.5 mg/mL, 1200 mL/hr cap, latency 1.5, interval 10, 30 min, the target raised to 1 mcg/mL at 15 min (above Upper 0.6: TARGET_HIGH from then).", L, s8)
 
 writeJSON(list(
   generatedAt = GENERATED_AT, stanpumpRCommit = COMMIT, stanpumpRVersion = VERSION, rVersion = R.version.string,
@@ -806,16 +782,17 @@ for (tr in cl$traces)
                   tr$name, length(tr$steps), length(tr$finalHistory), tr$maxTrueCe, tr$maxTrueCeAt,
                   tr$finalStateRelativeDifference$cp, tr$finalStateRelativeDifference$ce))
 ke <- jsonlite::fromJSON(file.path(OUT, "ke0-solve.json"), simplifyVector = FALSE)
-message(sprintf("  ke0: %d entries; pure-R Brent identical in %d; |ke0Exact rel diff| max %.3g",
-                length(ke$entries), sum(vapply(ke$entries, function(e) isTRUE(e$pureRBrentIdentical), NA)),
-                max(vapply(ke$entries, function(e) abs(e$ke0ExactRelativeDifference), 0))))
+stopifnot(all(vapply(ke$entries, function(e) isTRUE(e$resolveIdentical), NA)))
+message(sprintf("  ke0: %d entries, every re-solve identical to getDrugPK()'s; |ke0Exact rel diff| max %.3g",
+                length(ke$entries),
+                max(vapply(ke$entries, function(e) if (is.null(e$ke0ExactRelativeDifference)) 0 else abs(e$ke0ExactRelativeDifference), 0))))
 message(sprintf("  models: %d entries; rate cases: %d success + %d error; files: %s",
                 length(jsonlite::fromJSON(file.path(OUT, "models.json"), simplifyVector = FALSE)$entries),
                 length(rc$cases), length(rc$errors),
                 paste(sprintf("%s=%d bytes", names(report), vapply(report, `[[`, 0, "bytes")), collapse = ", ")))
 writeLines(jsonlite::toJSON(list(generatedAt = GENERATED_AT, commit = COMMIT, version = VERSION,
                                  successCases = length(rc$cases), errorCases = length(rc$errors),
-                                 modelEntries = 16L, traces = length(cl$traces), maxRelativeReplayDifference = maxRel,
+                                 modelEntries = length(modelCombos), traces = length(cl$traces), maxRelativeReplayDifference = maxRel,
                                  files = report), auto_unbox = TRUE, digits = NA, pretty = TRUE),
            file.path(OUT, "manifest.json"))
 message("done: ", OUT)

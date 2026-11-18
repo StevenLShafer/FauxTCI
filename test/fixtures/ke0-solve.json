@@ -1,29 +1,30 @@
 {
-  "generatedAt": "2026-10-14T22:29:19Z",
-  "stanpumpRCommit": "7d2d2f1b7727f39eba313fd8c5deea5b5104d959",
+  "generatedAt": "2026-11-18T02:05:04Z",
+  "stanpumpRCommit": "d99231c6aebf09d8a6d0352e188f32d4dc4ed6bc",
   "stanpumpRVersion": "0.0.1.9002",
   "rVersion": "R version 4.3.3 (2024-02-29)",
-  "optimizer": {
-    "outer": {
-      "fn": "stats::optimize",
-      "objective": "tPeakError",
-      "interval": [0, 200],
-      "tol": 0.0001220703125,
-      "maximum": false,
-      "result": "$minimum"
+  "solver": {
+    "root": {
+      "fn": "stats::uniroot",
+      "tol": 1.49011611938477e-08,
+      "maxiter": 1000,
+      "bracketStart": [0.001, 1],
+      "bracketMin": 1e-12,
+      "bracketMax": 1000000
     },
-    "inner": {
+    "peak": {
       "fn": "stats::optimize",
-      "objective": "CE",
-      "interval": [0, 100],
       "tol": 0.0001220703125,
+      "interval": "c(0, min(4000, 20 / min(c(lambda, ke0))))",
       "maximum": true,
       "result": "$maximum"
     },
-    "brentGoldenConstant": 0.381966011250105,
-    "brentEps": 1.49011611938477e-08
+    "separateEigenvalues": {
+      "threshold": 1e-10,
+      "nudge": 1e-08
+    }
   },
-  "notes": "HOW ke0 IS DERIVED FROM tPeak (R/getDrugPK.R).  For an IV drug (tPeakRoute 'IV', no X$ke0 supplied) getDrugPK() runs   ke0 <- stats::optimize(tPeakError, c(0, 200), tPeak, p_coef_bolus_l1, p_coef_bolus_l2, p_coef_bolus_l3, lambda_1, lambda_2, lambda_3)$minimum i.e. Brent's fmin on the interval [0, 200] /min with the DEFAULT tolerance tol = .Machine$double.eps^0.25 = 2^-13 = 0.0001220703125 (absolute, in ke0 units).  The objective tPeakError(lambda_4 = ke0, tPeak, p1, p2, p3, l1, l2, l3) is:   e_i = p_i * ke0 / (ke0 - l_i) for the three plasma exponentials (e_2, e_3 are 0 when l_2, l_3 are 0), e_4 = -(e_1 + e_2 + e_3);   predPeak = stats::optimize(CE, c(0, 100), e_1, e_2, e_3, e_4, l_1, l_2, l_3, ke0, maximum = TRUE)$maximum, where   CE(t) = e_1 exp(-l_1 t) + e_2 exp(-l_2 t) + e_3 exp(-l_3 t) + e_4 exp(-ke0 t) is the effect-site concentration after a   UNIT IV BOLUS (the plasma curve is the bolus response sum p_i exp(-l_i t), p_i = p_coef_bolus_li);   return (tPeak - predPeak)^2. So it is a NESTED Brent minimisation: the inner optimize (maximum = TRUE, interval [0, 100] min, same default tol) finds the peak time of the unit-bolus effect-site curve for a trial ke0; the outer one minimises the squared miss of tPeak. stats::optimize(maximum = TRUE) minimises function(arg) -f(arg, ...) and returns list(maximum = argmin, objective = f(argmin)). The C routine is Brent_fmin() in R's src/library/stats/src/optimize.c (Netlib FMIN, Forsythe-Malcolm-Moler):   c = (3 - sqrt(5))/2; eps = sqrt(DBL_EPSILON); x = v = w = a + c (b - a); fx = f(x); d = e = 0; tol3 = tol/3;   loop: xm = (a+b)/2; tol1 = eps |x| + tol3; t2 = 2 tol1; stop when |x - xm| <= t2 - (b - a)/2;   if |e| > tol1 fit a parabola through (v,fv),(w,fw),(x,fx): r = (x-w)(fx-fv); q = (x-v)(fx-fw); p = (x-v) q - (x-w) r;   q = 2 (q - r); if q > 0 then p = -p else q = -q; r = e; e = d;   golden-section step (e = (x < xm ? b : a) - x; d = c e) when |p| >= |q r / 2| or p <= q (a - x) or p >= q (b - x),   else parabolic step d = p/q, u = x + d, and if u - a < t2 or b - u < t2 then d = (x >= xm ? -tol1 : tol1);   u = x + d if |d| >= tol1 else x +/- tol1 (sign of d); fu = f(u);   if fu <= fx: (u < x ? b = x : a = x); v = w; w = x; x = u; fv = fw; fw = fx; fx = fu;   else: (u < x ? a = u : b = u); if fu <= fw or w == x: v = w, fv = fw, w = u, fw = fu; else if fu <= fv or v == x or v == w: v = u, fv = fu.   return x. The pure-R transcription brentFmin() in generate.R, applied to BOTH levels, reproduced every ke0 in this file bit for bit (see pureRBrentIdentical), so a JavaScript port of the same algorithm with the same tolerance should match R's ke0 to within a few ulps whenever its exp() agrees with R's libm; a last-bit difference in exp() can in principle change a branch and move the result by up to the stopping width (about 2 tol1 = 2 (sqrt(eps) |ke0| + tol/3), i.e. ~8e-5 absolute). ACHIEVABLE ACCURACY WITHOUT PORTING BRENT: because the outer tolerance is absolute 1.22e-4 and the inner peak time is itself only resolved to ~4e-5 min, R's ke0 is NOT the exact root.  `ke0Exact` is the ke0 whose exact (uniroot, tol 1e-14) peak time equals tPeak; `ke0ExactRelativeDifference` shows how far R's value is from it (of order 1e-5 to 1e-4 relative). A port using a different (better) optimizer should therefore expect agreement with R's ke0 only to that order; to validate coefficients and controller output independently of the solve, inject R's ke0 from models.json. ROUND TRIP: `roundTrip.peakTimeInnerOptimize` is the inner optimizer's peak time for R's ke0 (what the solve 'saw'); `roundTrip.peakTimeExact` is the true peak time of the unit-bolus Ce curve for that ke0; `ceAtPeak*` is Ce there (its reciprocal is getDrugPK()'s vdPeakEffect).  `objectiveSamples` give tPeakError() and the inner predPeak at ke0 x {0.5, 0.8, 0.95, 1, 1.05, 1.25, 2} so a port can check its objective function (including the inner optimizer) directly. Both drugs: tPeak = 1.6 min (propofol: Schnider 1999; remifentanil: 'Opioid simulation spreadsheet'), tPeakRoute IV.",
+  "notes": "HOW ke0 AND tPeak ARE DERIVED (R/getDrugPK.R, R/metaboliteCoefficients.R).  `solve` names the case. ke0FromTPeak (propofol, remifentanil, sufentanil: the drug function gives tPeak): ke0FromTPeakBolus(tPeak, p, lambda), where p = p_coef_bolus and peakAt(z) = effectSitePeakTime(p, lambda, z).  Bracket: lo = 1e-3, hi = 1; while peakAt(lo) < tPeak and lo > KE0_SOLVE_MIN (1e-12) lo = lo / 10; while peakAt(hi) > tPeak and hi < KE0_SOLVE_MAX (1e6) hi = hi * 10; if peakAt(lo) < tPeak return lo; if peakAt(hi) > tPeak return hi; else stats::uniroot(function(z) peakAt(z) - tPeak, c(lo, hi), tol = .Machine$double.eps^0.5)$root (R_zeroin2 in R's src/library/stats/src/zeroin.c, maxiter 1000, f(lo) and f(hi) evaluated first).  `bracket` records lo, hi and peakAt there; `ke0BeforeSeparation` is that root.  tPeakFromKe0 (remimazolam: the drug function gives ke0 = exp(-1.20976) and no tPeak): ke0 is the model's (`modelKe0`) and tPeak = effectSitePeakTime(p, lambda, ke0) (`tPeakResolved`). Both: ke0 <- separateEigenvalues(ke0, lambda) (a relative 1 + 1e-8 nudge only if |ke0 - lambda_i| < 1e-10 max(ke0, lambda_i); never fires here), which is `ke0`. effectSitePeakTime(coef, lambda, ke0, upper = 4000): use = lambda > 0; ke0 = separateEigenvalues(ke0, lambda[use]); e = coef * ke0 / (ke0 - lambda) (note the order: (coef * ke0) / (ke0 - lambda), unlike getDrugPK()'s p / (ke0 - l) * ke0); upper = min(upper, 20 / min(c(lambda, ke0))); stats::optimize(function(t) sum(e * exp(-lambda * t)) - sum(e) * exp(-ke0 * t), c(0, upper), maximum = TRUE)$maximum, i.e. Brent_fmin on the negated function over [0, upper] with the default tol = .Machine$double.eps^0.25.  R's sum() accumulates in long double.  `roundTrip.window` is that upper, `roundTrip.peakTime` the peak at `ke0`, `ceAtPeak` the unit-bolus Ce there; `peakSamples` give effectSitePeakTime() at ke0 x {0.5, 0.8, 0.95, 1, 1.05, 1.25, 2} so a port can check it directly.  `ke0Exact` is the ke0 whose exact peak time (uniroot on dCe/dt, tol 1e-14) equals tPeak; `ke0ExactRelativeDifference` shows how far the library's is from it. This replaced the nested optimize() of tPeakError() on 2026-10-17 (stanpumpR f5b2f0f, 'exact IV ke0 solve').",
   "entries": [
     {
       "drug": "propofol",
@@ -34,62 +35,66 @@
         "age": 50,
         "sex": "male"
       },
+      "adjustToFFM": true,
+      "solve": "ke0FromTPeak",
       "tPeak": 1.6,
       "inputs": {
         "p_coef_bolus": [0.150054137097034, 0.00839803395653969, 0.000705488264907363],
         "lambda": [0.628049339579614, 0.0430588083155251, 0.00334925065328223]
       },
-      "ke0": 0.687117506509047,
-      "ke0Resolved": 0.687117506509047,
-      "resolveIdentical": true,
-      "ke0PureRBrent": 0.687117506509047,
-      "pureRBrentIdentical": true,
-      "objectiveAtKe0": 2.78985796645183e-10,
-      "e_coef_bolus": [1.74552267123266, 0.00895948795968594, 0.000708943905048432, -1.7551911030974],
-      "roundTrip": {
-        "peakTimeInnerOptimize": 1.59998329713208,
-        "ceAtPeakInnerOptimize": 0.063474700678211,
-        "peakTimeExact": 1.59997468113165,
-        "ceAtPeakExact": 0.0634747006790997,
-        "peakTimeMinusTPeak": -2.53188683545513e-05
+      "ke0": 0.687096331055954,
+      "bracket": {
+        "lower": 0.001,
+        "upper": 1,
+        "peakAtLower": 143.2066591741,
+        "peakAtUpper": 1.30435240891507
       },
-      "ke0Exact": 0.687097048532401,
-      "ke0ExactRelativeDifference": -2.977362161792e-05,
-      "objectiveSamples": [
+      "ke0BeforeSeparation": 0.687096331055954,
+      "resolveIdentical": true,
+      "ke0Exact": 0.687097048532402,
+      "ke0ExactRelativeDifference": 1.04421522239754e-06,
+      "e_coef_bolus": [1.74609483872606, 0.0089595064198571, 0.000708944012068627, -1.75576328915798],
+      "roundTrip": {
+        "window": 4000,
+        "peakTime": 1.59999999976353,
+        "ceAtPeak": 0.06347378760959,
+        "peakTimeMinusTPeak": -2.36472397219245e-10
+      },
+      "peakSamples": [
         {
-          "ke0": 0.343558753254523,
-          "predPeak": 2.27744238786588,
-          "objective": 0.45892818887743
+          "ke0": 0.343548165527977,
+          "window": 4000,
+          "peakTime": 2.27746118850848
         },
         {
-          "ke0": 0.549694005207237,
-          "predPeak": 1.79845841751953,
-          "objective": 0.0393857434843568
+          "ke0": 0.549677064844763,
+          "window": 4000,
+          "peakTime": 1.79849108181909
         },
         {
-          "ke0": 0.652761631183594,
-          "predPeak": 1.64405161725512,
-          "objective": 0.00194054498279199
+          "ke0": 0.652741514503156,
+          "window": 4000,
+          "peakTime": 1.64407301579905
         },
         {
-          "ke0": 0.687117506509047,
-          "predPeak": 1.59998329713208,
-          "objective": 2.78985796645183e-10
+          "ke0": 0.687096331055954,
+          "window": 4000,
+          "peakTime": 1.59999999976353
         },
         {
-          "ke0": 0.721473381834499,
-          "predPeak": 1.5588799152053,
-          "objective": 0.00169086137349311
+          "ke0": 0.721451147608752,
+          "window": 4000,
+          "peakTime": 1.55891815182614
         },
         {
-          "ke0": 0.858896883136309,
-          "predPeak": 1.41862797595235,
-          "objective": 0.0328958111073515
+          "ke0": 0.858870413819943,
+          "window": 4000,
+          "peakTime": 1.41864809894552
         },
         {
-          "ke0": 1.37423501301809,
-          "predPeak": 1.08862549822493,
-          "objective": 0.261503881065697
+          "ke0": 1.37419266211191,
+          "window": 4000,
+          "peakTime": 1.08865484746771
         }
       ]
     },
@@ -102,62 +107,66 @@
         "age": 35,
         "sex": "female"
       },
+      "adjustToFFM": true,
+      "solve": "ke0FromTPeak",
       "tPeak": 1.6,
       "inputs": {
         "p_coef_bolus": [0.159109326613608, 0.00802946107369478, 0.000613875121221414],
         "lambda": [0.693795614213211, 0.042283841630657, 0.00357980274977948]
       },
-      "ke0": 0.621977731975491,
-      "ke0Resolved": 0.621977731975491,
-      "resolveIdentical": true,
-      "ke0PureRBrent": 0.621977731975491,
-      "pureRBrentIdentical": true,
-      "objectiveAtKe0": 2.73187601938418e-11,
-      "e_coef_bolus": [-1.37796402539007, 0.008615143389956, 0.000617428742187967, 1.36873145325793],
-      "roundTrip": {
-        "peakTimeInnerOptimize": 1.59999477326486,
-        "ceAtPeakInnerOptimize": 0.0605471576934649,
-        "peakTimeExact": 1.59998615696121,
-        "ceAtPeakExact": 0.0605471576943122,
-        "peakTimeMinusTPeak": -1.384303879437e-05
+      "ke0": 0.621966630937694,
+      "bracket": {
+        "lower": 0.001,
+        "upper": 1,
+        "peakAtLower": 125.600730839322,
+        "peakAtUpper": 1.2427175535256
       },
-      "ke0Exact": 0.621967302080886,
-      "ke0ExactRelativeDifference": -1.67689196386641e-05,
-      "objectiveSamples": [
+      "ke0BeforeSeparation": 0.621966630937694,
+      "resolveIdentical": true,
+      "ke0Exact": 0.621967302080887,
+      "ke0ExactRelativeDifference": 1.0790662390213e-06,
+      "e_coef_bolus": [-1.37772647351895, 0.0086151546058859, 0.000617428805981177, 1.36849389010709],
+      "roundTrip": {
+        "window": 4000,
+        "peakTime": 1.59999999997483,
+        "ceAtPeak": 0.0605466170101712,
+        "peakTimeMinusTPeak": -2.51658693883883e-11
+      },
+      "peakSamples": [
         {
-          "ke0": 0.310988865987745,
-          "predPeak": 2.25411639447321,
-          "objective": 0.427868257518631
+          "ke0": 0.310983315468847,
+          "window": 4000,
+          "peakTime": 2.25413530092639
         },
         {
-          "ke0": 0.497582185580393,
-          "predPeak": 1.79230908558141,
-          "objective": 0.0369827843971582
+          "ke0": 0.497573304750155,
+          "window": 4000,
+          "peakTime": 1.79233181901843
         },
         {
-          "ke0": 0.590878845376716,
-          "predPeak": 1.64275661495272,
-          "objective": 0.00182812812221502
+          "ke0": 0.590868299390809,
+          "window": 4000,
+          "peakTime": 1.64276598263886
         },
         {
-          "ke0": 0.621977731975491,
-          "predPeak": 1.59999477326486,
-          "objective": 2.73187601938418e-11
+          "ke0": 0.621966630937694,
+          "window": 4000,
+          "peakTime": 1.59999999997483
         },
         {
-          "ke0": 0.653076618574265,
-          "predPeak": 1.56007481419672,
-          "objective": 0.00159402046142622
+          "ke0": 0.653064962484578,
+          "window": 4000,
+          "peakTime": 1.56010239071998
         },
         {
-          "ke0": 0.777472164969363,
-          "predPeak": 1.42359834810324,
-          "objective": 0.0311175427919047
+          "ke0": 0.777458288672117,
+          "window": 4000,
+          "peakTime": 1.42360488529425
         },
         {
-          "ke0": 1.24395546395098,
-          "predPeak": 1.10056659638426,
-          "objective": 0.249433724647901
+          "ke0": 1.24393326187539,
+          "window": 4000,
+          "peakTime": 1.10058357131246
         }
       ]
     },
@@ -170,62 +179,66 @@
         "age": 60,
         "sex": "male"
       },
+      "adjustToFFM": true,
+      "solve": "ke0FromTPeak",
       "tPeak": 1.6,
       "inputs": {
         "p_coef_bolus": [0.136699491961722, 0.00647718520061673, 0.000509975874066089],
         "lambda": [0.669760889239386, 0.0417928193890933, 0.00343386394190734]
       },
-      "ke0": 0.639126089513505,
-      "ke0Resolved": 0.639126089513505,
-      "resolveIdentical": true,
-      "ke0PureRBrent": 0.639126089513505,
-      "pureRBrentIdentical": true,
-      "objectiveAtKe0": 3.81849855480802e-12,
-      "e_coef_bolus": [-2.85192697578389, 0.00693036576961919, 0.000512730647043883, 2.84448387936723],
-      "roundTrip": {
-        "peakTimeInnerOptimize": 1.59999804590211,
-        "ceAtPeakInnerOptimize": 0.0533790536808921,
-        "peakTimeExact": 1.59998952559928,
-        "ceAtPeakExact": 0.0533790536816253,
-        "peakTimeMinusTPeak": -1.04744007194402e-05
+      "ke0": 0.639117355596208,
+      "bracket": {
+        "lower": 0.001,
+        "upper": 1,
+        "peakAtLower": 124.508690415638,
+        "peakAtUpper": 1.25965975004081
       },
-      "ke0Exact": 0.639118022120565,
-      "ke0ExactRelativeDifference": -1.26225373560735e-05,
-      "objectiveSamples": [
+      "ke0BeforeSeparation": 0.639117355596208,
+      "resolveIdentical": true,
+      "ke0Exact": 0.639118022120569,
+      "ke0ExactRelativeDifference": 1.04288258622276e-06,
+      "e_coef_bolus": [-2.85107516748059, 0.00693037239590251, 0.000512730684892843, 2.84363206439979],
+      "roundTrip": {
+        "window": 4000,
+        "peakTime": 1.59999999996165,
+        "ceAtPeak": 0.0533786952446457,
+        "peakTimeMinusTPeak": -3.83530984748859e-11
+      },
+      "peakSamples": [
         {
-          "ke0": 0.319563044756752,
-          "predPeak": 2.2569358445044,
-          "objective": 0.431564703794713
+          "ke0": 0.319558677798104,
+          "window": 4000,
+          "peakTime": 2.25695174514119
         },
         {
-          "ke0": 0.511300871610804,
-          "predPeak": 1.79329378131123,
-          "objective": 0.0373624858906291
+          "ke0": 0.511293884476967,
+          "window": 4000,
+          "peakTime": 1.79331217414753
         },
         {
-          "ke0": 0.607169785037829,
-          "predPeak": 1.64298217163791,
-          "objective": 0.00184746707835312
+          "ke0": 0.607161487816398,
+          "window": 4000,
+          "peakTime": 1.64298822851634
         },
         {
-          "ke0": 0.639126089513505,
-          "predPeak": 1.59999804590211,
-          "objective": 3.81849855480802e-12
+          "ke0": 0.639117355596208,
+          "window": 4000,
+          "peakTime": 1.59999999996165
         },
         {
-          "ke0": 0.67108239398918,
-          "predPeak": 1.55986971165435,
-          "objective": 0.00161044004246594
+          "ke0": 0.671073223376019,
+          "window": 4000,
+          "peakTime": 1.55989426878461
         },
         {
-          "ke0": 0.798907611891881,
-          "predPeak": 1.42268504385342,
-          "objective": 0.0314405936732621
+          "ke0": 0.79889669449526,
+          "window": 4000,
+          "peakTime": 1.42268929450098
         },
         {
-          "ke0": 1.27825217902701,
-          "predPeak": 1.0981298229791,
-          "objective": 0.251873674582992
+          "ke0": 1.27823471119242,
+          "window": 4000,
+          "peakTime": 1.09814491507769
         }
       ]
     },
@@ -238,62 +251,66 @@
         "age": 45,
         "sex": "female"
       },
+      "adjustToFFM": true,
+      "solve": "ke0FromTPeak",
       "tPeak": 1.6,
       "inputs": {
         "p_coef_bolus": [0.132911925343637, 0.00444876741901134, 0.000309457830725693],
         "lambda": [0.847256970661122, 0.0376336392489887, 0.00358451656494047]
       },
-      "ke0": 0.490380989833048,
-      "ke0Resolved": 0.490380989833048,
-      "resolveIdentical": true,
-      "ke0PureRBrent": 0.490380989833048,
-      "pureRBrentIdentical": true,
-      "objectiveAtKe0": 2.59960133356841e-11,
-      "e_coef_bolus": [-0.182633421726492, 0.00481856153913981, 0.00031173651757184, 0.177503123669781],
-      "roundTrip": {
-        "peakTimeInnerOptimize": 1.59999490137188,
-        "ceAtPeakInnerOptimize": 0.0387602065420165,
-        "peakTimeExact": 1.59998637083263,
-        "ceAtPeakExact": 0.0387602065425373,
-        "peakTimeMinusTPeak": -1.36291673742406e-05
+      "ke0": 0.490371622153016,
+      "bracket": {
+        "lower": 0.001,
+        "upper": 1,
+        "peakAtLower": 111.614046870315,
+        "peakAtUpper": 1.11832687887451
       },
+      "ke0BeforeSeparation": 0.490371622153016,
+      "resolveIdentical": true,
       "ke0Exact": 0.49037225219607,
-      "ke0ExactRelativeDifference": -1.78180581216906e-05,
-      "objectiveSamples": [
+      "ke0ExactRelativeDifference": 1.28482772064975e-06,
+      "e_coef_bolus": [-0.182625139156588, 0.00481856919061401, 0.000311736561422651, 0.177494833404551],
+      "roundTrip": {
+        "window": 4000,
+        "peakTime": 1.599999999979,
+        "ceAtPeak": 0.0387597800385543,
+        "peakTimeMinusTPeak": -2.10007566892045e-11
+      },
+      "peakSamples": [
         {
-          "ke0": 0.245190494916524,
-          "predPeak": 2.19663667429183,
-          "objective": 0.355975321108547
+          "ke0": 0.245185811076508,
+          "window": 4000,
+          "peakTime": 2.19667527007671
         },
         {
-          "ke0": 0.392304791866439,
-          "predPeak": 1.77727475020448,
-          "objective": 0.0314263370600599
+          "ke0": 0.392297297722413,
+          "window": 4000,
+          "peakTime": 1.77730270719665
         },
         {
-          "ke0": 0.465861940341396,
-          "predPeak": 1.63957081903063,
-          "objective": 0.00156584971885532
+          "ke0": 0.465853041045365,
+          "window": 4000,
+          "peakTime": 1.63957910254312
         },
         {
-          "ke0": 0.490380989833048,
-          "predPeak": 1.59999490137188,
-          "objective": 2.59960133356841e-11
+          "ke0": 0.490371622153016,
+          "window": 4000,
+          "peakTime": 1.599999999979
         },
         {
-          "ke0": 0.514900039324701,
-          "predPeak": 1.56296196922477,
-          "objective": 0.0013718157237072
+          "ke0": 0.514890203260667,
+          "window": 4000,
+          "peakTime": 1.56299005347478
         },
         {
-          "ke0": 0.612976237291311,
-          "predPeak": 1.43570039910325,
-          "objective": 0.0269943588548328
+          "ke0": 0.61296452769127,
+          "window": 4000,
+          "peakTime": 1.43573811826779
         },
         {
-          "ke0": 0.980761979666097,
-          "predPeak": 1.12984859474529,
-          "objective": 0.221042343855766
+          "ke0": 0.980743244306032,
+          "window": 4000,
+          "peakTime": 1.12987543837534
         }
       ]
     },
@@ -306,62 +323,66 @@
         "age": 5,
         "sex": "male"
       },
+      "adjustToFFM": true,
+      "solve": "ke0FromTPeak",
       "tPeak": 1.6,
       "inputs": {
         "p_coef_bolus": [0.262002361886793, 0.0244312052832299, 0.00164914449910202],
         "lambda": [0.708496390342289, 0.0450523176836487, 0.00306324351305548]
       },
-      "ke0": 0.656925813318205,
-      "ke0Resolved": 0.656925813318205,
-      "resolveIdentical": true,
-      "ke0PureRBrent": 0.656925813318205,
-      "pureRBrentIdentical": true,
-      "objectiveAtKe0": 7.00427927437206e-12,
-      "e_coef_bolus": [-3.33748669504685, 0.0262300778110766, 0.00165687048224014, 3.30959974675353],
-      "roundTrip": {
-        "peakTimeInnerOptimize": 1.59999735344011,
-        "ceAtPeakInnerOptimize": 0.108705725436079,
-        "peakTimeExact": 1.59998795177445,
-        "ceAtPeakExact": 0.108705725437844,
-        "peakTimeMinusTPeak": -1.20482255476784e-05
+      "ke0": 0.656927368212965,
+      "bracket": {
+        "lower": 0.001,
+        "upper": 1,
+        "peakAtLower": 173.363989387488,
+        "peakAtUpper": 1.27014390827475
       },
-      "ke0Exact": 0.656916614054961,
-      "ke0ExactRelativeDifference": -1.40035039829069e-05,
-      "objectiveSamples": [
+      "ke0BeforeSeparation": 0.656927368212965,
+      "resolveIdentical": true,
+      "ke0Exact": 0.656916614054958,
+      "ke0ExactRelativeDifference": -1.6370391198696e-05,
+      "e_coef_bolus": [-3.33759522583613, 0.0262300732397879, 0.00165687046386768, 3.30970828213248],
+      "roundTrip": {
+        "window": 4000,
+        "peakTime": 1.59999999981887,
+        "ceAtPeak": 0.108705849204042,
+        "peakTimeMinusTPeak": -1.8113177624457e-10
+      },
+      "peakSamples": [
         {
-          "ke0": 0.328462906659102,
-          "predPeak": 2.29810739357854,
-          "objective": 0.487353932969026
+          "ke0": 0.328463684106482,
+          "window": 4000,
+          "peakTime": 2.2981234322703
         },
         {
-          "ke0": 0.525540650654564,
-          "predPeak": 1.80171131444872,
-          "objective": 0.0406874543766296
+          "ke0": 0.525541894570372,
+          "window": 4000,
+          "peakTime": 1.80171273704957
         },
         {
-          "ke0": 0.624079522652294,
-          "predPeak": 1.64462553783735,
-          "objective": 0.00199143862727283
+          "ke0": 0.624080999802317,
+          "window": 4000,
+          "peakTime": 1.64461756073429
         },
         {
-          "ke0": 0.656925813318205,
-          "predPeak": 1.59999735344011,
-          "objective": 7.00427927437206e-12
+          "ke0": 0.656927368212965,
+          "window": 4000,
+          "peakTime": 1.59999999981887
         },
         {
-          "ke0": 0.689772103984115,
-          "predPeak": 1.55845574917796,
-          "objective": 0.00172592477636472
+          "ke0": 0.689773736623613,
+          "window": 4000,
+          "peakTime": 1.55845555625216
         },
         {
-          "ke0": 0.821157266647756,
-          "predPeak": 1.41715489949301,
-          "objective": 0.0334323307789899
+          "ke0": 0.821159210266206,
+          "window": 4000,
+          "peakTime": 1.41714902720173
         },
         {
-          "ke0": 1.31385162663641,
-          "predPeak": 1.08705001400359,
-          "objective": 0.263117688133719
+          "ke0": 1.31385473642593,
+          "window": 4000,
+          "peakTime": 1.08705927624303
         }
       ]
     },
@@ -374,62 +395,66 @@
         "age": 80,
         "sex": "female"
       },
+      "adjustToFFM": true,
+      "solve": "ke0FromTPeak",
       "tPeak": 1.6,
       "inputs": {
         "p_coef_bolus": [0.141451043022267, 0.0081190550683641, 0.000486969297216635],
         "lambda": [0.573717835948615, 0.0505533020249189, 0.00442036349163771]
       },
-      "ke0": 0.740751123975884,
-      "ke0Resolved": 0.740751123975884,
-      "resolveIdentical": true,
-      "ke0PureRBrent": 0.740751123975884,
-      "pureRBrentIdentical": true,
-      "objectiveAtKe0": 2.27698870069436e-10,
-      "e_coef_bolus": [0.627300224666593, 0.00871373246370529, 0.000489892686294594, -0.636503849816593],
-      "roundTrip": {
-        "peakTimeInnerOptimize": 1.60001508969418,
-        "ceAtPeakInnerOptimize": 0.0644582162588605,
-        "peakTimeExact": 1.60000661756435,
-        "ceAtPeakExact": 0.0644582162597321,
-        "peakTimeMinusTPeak": 6.61756435227367e-06
+      "ke0": 0.740756025083504,
+      "bracket": {
+        "lower": 0.001,
+        "upper": 1,
+        "peakAtLower": 90.8314146462439,
+        "peakAtUpper": 1.35561223524011
       },
-      "ke0Exact": 0.740756779039655,
-      "ke0ExactRelativeDifference": 7.63422907865657e-06,
-      "objectiveSamples": [
+      "ke0BeforeSeparation": 0.740756025083504,
+      "resolveIdentical": true,
+      "ke0Exact": 0.740756779039656,
+      "ke0ExactRelativeDifference": 1.01781980268641e-06,
+      "e_coef_bolus": [0.627285969249083, 0.00871372824091999, 0.000489892666836288, -0.636489590156839],
+      "roundTrip": {
+        "window": 4000,
+        "peakTime": 1.59999999999946,
+        "ceAtPeak": 0.0644584043086014,
+        "peakTimeMinusTPeak": -5.3534954247425e-13
+      },
+      "peakSamples": [
         {
-          "ke0": 0.370375561987942,
-          "predPeak": 2.29173061826993,
-          "objective": 0.478491248252094
+          "ke0": 0.370378012541752,
+          "window": 4000,
+          "peakTime": 2.29171779824935
         },
         {
-          "ke0": 0.592600899180708,
-          "predPeak": 1.80249467654234,
-          "objective": 0.0410040940279857
+          "ke0": 0.592604820066803,
+          "window": 4000,
+          "peakTime": 1.80249776232176
         },
         {
-          "ke0": 0.70371356777709,
-          "predPeak": 1.64494584343372,
-          "objective": 0.00202012884196865
+          "ke0": 0.703718223829329,
+          "window": 4000,
+          "peakTime": 1.64493490601199
         },
         {
-          "ke0": 0.740751123975884,
-          "predPeak": 1.60001508969418,
-          "objective": 2.27698870069436e-10
+          "ke0": 0.740756025083504,
+          "window": 4000,
+          "peakTime": 1.59999999999946
         },
         {
-          "ke0": 0.777788680174679,
-          "predPeak": 1.55812445358413,
-          "objective": 0.00175356138762774
+          "ke0": 0.77779382633768,
+          "window": 4000,
+          "peakTime": 1.55813122911289
         },
         {
-          "ke0": 0.925938904969856,
-          "predPeak": 1.41532330953047,
-          "objective": 0.0341054800027798
+          "ke0": 0.92594503135438,
+          "window": 4000,
+          "peakTime": 1.41531606398356
         },
         {
-          "ke0": 1.48150224795177,
-          "predPeak": 1.08045276402663,
-          "objective": 0.269929330407569
+          "ke0": 1.48151205016701,
+          "window": 4000,
+          "peakTime": 1.08046211498066
         }
       ]
     },
@@ -442,62 +467,66 @@
         "age": 25,
         "sex": "female"
       },
+      "adjustToFFM": true,
+      "solve": "ke0FromTPeak",
       "tPeak": 1.6,
       "inputs": {
         "p_coef_bolus": [0.1771556367613, 0.00987007246027898, 0.000781961730379207],
         "lambda": [0.690557712088663, 0.0429816842941263, 0.00345792212606538]
       },
-      "ke0": 0.630819160701553,
-      "ke0Resolved": 0.630819160701553,
-      "resolveIdentical": true,
-      "ke0PureRBrent": 0.630819160701553,
-      "pureRBrentIdentical": true,
-      "objectiveAtKe0": 6.35008411999454e-13,
-      "e_coef_bolus": [-1.87070438603614, 0.0105917555027426, 0.000786271787492959, 1.8593263587459],
-      "roundTrip": {
-        "peakTimeInnerOptimize": 1.59999920312585,
-        "ceAtPeakInnerOptimize": 0.0686743430403458,
-        "peakTimeExact": 1.59999049483786,
-        "ceAtPeakExact": 0.0686743430413245,
-        "peakTimeMinusTPeak": -9.5051621391562e-06
+      "ke0": 0.630811258594683,
+      "bracket": {
+        "lower": 0.001,
+        "upper": 1,
+        "peakAtLower": 139.349130249051,
+        "peakAtUpper": 1.25038439897975
       },
-      "ke0Exact": 0.630811950106851,
-      "ke0ExactRelativeDifference": -1.14305258158715e-05,
-      "objectiveSamples": [
+      "ke0BeforeSeparation": 0.630811258594683,
+      "resolveIdentical": true,
+      "ke0Exact": 0.63081195010685,
+      "ke0ExactRelativeDifference": 1.0962267365951e-06,
+      "e_coef_bolus": [-1.87043353466658, 0.0105917652042221, 0.000786271841782193, 1.85905549762057],
+      "roundTrip": {
+        "window": 4000,
+        "peakTime": 1.59999999994649,
+        "ceAtPeak": 0.068673916764627,
+        "peakTimeMinusTPeak": -5.35120836531178e-11
+      },
+      "peakSamples": [
         {
-          "ke0": 0.315409580350776,
-          "predPeak": 2.26104642748719,
-          "objective": 0.436982379293574
+          "ke0": 0.315405629297341,
+          "window": 4000,
+          "peakTime": 2.26106079549507
         },
         {
-          "ke0": 0.504655328561242,
-          "predPeak": 1.79389724260664,
-          "objective": 0.0375961406893866
+          "ke0": 0.504649006875746,
+          "window": 4000,
+          "peakTime": 1.79391466992061
         },
         {
-          "ke0": 0.599278202666475,
-          "predPeak": 1.64308265918383,
-          "objective": 0.00185611552235002
+          "ke0": 0.599270695664949,
+          "window": 4000,
+          "peakTime": 1.6430876111642
         },
         {
-          "ke0": 0.630819160701553,
-          "predPeak": 1.59999920312585,
-          "objective": 6.35008411999454e-13
+          "ke0": 0.630811258594683,
+          "window": 4000,
+          "peakTime": 1.59999999994649
         },
         {
-          "ke0": 0.662360118736631,
-          "predPeak": 1.55979488045755,
-          "objective": 0.00161645163742284
+          "ke0": 0.662351821524417,
+          "window": 4000,
+          "peakTime": 1.55981771291692
         },
         {
-          "ke0": 0.788523950876941,
-          "predPeak": 1.42245414795986,
-          "objective": 0.0315225295766604
+          "ke0": 0.788514073243353,
+          "window": 4000,
+          "peakTime": 1.42245735643228
         },
         {
-          "ke0": 1.26163832140311,
-          "predPeak": 1.09803415854822,
-          "objective": 0.251969705984397
+          "ke0": 1.26162251718937,
+          "window": 4000,
+          "peakTime": 1.09804861610396
         }
       ]
     },
@@ -510,62 +539,66 @@
         "age": 0,
         "sex": "male"
       },
+      "adjustToFFM": true,
+      "solve": "ke0FromTPeak",
       "tPeak": 1.6,
       "inputs": {
         "p_coef_bolus": [0.883773364259233, 0.24365535603397, 0.0115593368901656],
         "lambda": [0.911008366358879, 0.0355205527566774, 0.00187116101227447]
       },
-      "ke0": 0.724395654927914,
-      "ke0Resolved": 0.724395654927914,
-      "resolveIdentical": true,
-      "ke0PureRBrent": 0.724395654927914,
-      "pureRBrentIdentical": true,
-      "objectiveAtKe0": 2.10362431377063e-10,
-      "e_coef_bolus": [-3.43064296157149, 0.256218987527071, 0.0115892727341387, 3.16283470131028],
-      "roundTrip": {
-        "peakTimeInnerOptimize": 1.59998549612357,
-        "ceAtPeakInnerOptimize": 0.447458711567423,
-        "peakTimeExact": 1.59997238433776,
-        "ceAtPeakExact": 0.447458711579604,
-        "peakTimeMinusTPeak": -2.76156622360801e-05
+      "ke0": 0.72437874857556,
+      "bracket": {
+        "lower": 0.001,
+        "upper": 1,
+        "peakAtLower": 193.269829348044,
+        "peakAtUpper": 1.30732015964762
       },
-      "ke0Exact": 0.724375879093933,
-      "ke0ExactRelativeDifference": -2.72997689135263e-05,
-      "objectiveSamples": [
+      "ke0BeforeSeparation": 0.72437874857556,
+      "resolveIdentical": true,
+      "ke0Exact": 0.724375879093934,
+      "ke0ExactRelativeDifference": -3.96130012335596e-06,
+      "e_coef_bolus": [-3.43025212841503, 0.25621929587091, 0.011589273434624, 3.1624435591095],
+      "roundTrip": {
+        "window": 4000,
+        "peakTime": 1.60000000001388,
+        "ceAtPeak": 0.447454093113881,
+        "peakTimeMinusTPeak": 1.38784539416292e-11
+      },
+      "peakSamples": [
         {
-          "ke0": 0.362197827463957,
-          "predPeak": 2.5471157607433,
-          "objective": 0.897028264248359
+          "ke0": 0.36218937428778,
+          "window": 4000,
+          "peakTime": 2.5471661256433
         },
         {
-          "ke0": 0.579516523942331,
-          "predPeak": 1.84544245278482,
-          "objective": 0.0602419976290307
+          "ke0": 0.579502998860448,
+          "window": 4000,
+          "peakTime": 1.84545031042656
         },
         {
-          "ke0": 0.688175872181518,
-          "predPeak": 1.65282371204408,
-          "objective": 0.00279034455400485
+          "ke0": 0.688159811146782,
+          "window": 4000,
+          "peakTime": 1.65284968752067
         },
         {
-          "ke0": 0.724395654927914,
-          "predPeak": 1.59998549612357,
-          "objective": 2.10362431377063e-10
+          "ke0": 0.72437874857556,
+          "window": 4000,
+          "peakTime": 1.60000000001388
         },
         {
-          "ke0": 0.76061543767431,
-          "predPeak": 1.55145155508525,
-          "objective": 0.00235695150366705
+          "ke0": 0.760597686004338,
+          "window": 4000,
+          "peakTime": 1.55148350032607
         },
         {
-          "ke0": 0.905494568659893,
-          "predPeak": 1.39083415330126,
-          "objective": 0.0437503514251993
+          "ke0": 0.90547343571945,
+          "window": 4000,
+          "peakTime": 1.39086680702575
         },
         {
-          "ke0": 1.44879130985583,
-          "predPeak": 1.03754527205202,
-          "objective": 0.316355320990936
+          "ke0": 1.44875749715112,
+          "window": 4000,
+          "peakTime": 1.03754664271267
         }
       ]
     },
@@ -578,62 +611,66 @@
         "age": 50,
         "sex": "male"
       },
+      "adjustToFFM": true,
+      "solve": "ke0FromTPeak",
       "tPeak": 1.6,
       "inputs": {
         "p_coef_bolus": [0.167035716184934, 0.0196589071248202, 0.000437972771395721],
         "lambda": [0.838042766338828, 0.103113450682718, 0.0246936598972061]
       },
-      "ke0": 0.571080440943592,
-      "ke0Resolved": 0.571080440943592,
-      "resolveIdentical": true,
-      "ke0PureRBrent": 0.571080440943592,
-      "pureRBrentIdentical": true,
-      "objectiveAtKe0": 2.60834433730707e-10,
-      "e_coef_bolus": [-0.35731944689572, 0.0239906181054628, 0.000457766717801911, 0.332871062072456],
-      "roundTrip": {
-        "peakTimeInnerOptimize": 1.59998384963054,
-        "ceAtPeakInnerOptimize": 0.0607905623949459,
-        "peakTimeExact": 1.599974643509,
-        "ceAtPeakExact": 0.0607905623958741,
-        "peakTimeMinusTPeak": -2.53564910002169e-05
+      "ke0": 0.571061910102046,
+      "bracket": {
+        "lower": 0.001,
+        "upper": 1,
+        "peakAtLower": 43.0064146996349,
+        "peakAtUpper": 1.18478067748911
       },
+      "ke0BeforeSeparation": 0.571061910102046,
+      "resolveIdentical": true,
       "ke0Exact": 0.571063099938485,
-      "ke0ExactRelativeDifference": -3.03652583128026e-05,
-      "objectiveSamples": [
+      "ke0ExactRelativeDifference": 2.08355069465789e-06,
+      "e_coef_bolus": [-0.357283051992438, 0.0239907896419818, 0.000457767389141221, 0.332834494961315],
+      "roundTrip": {
+        "window": 809.924494111253,
+        "peakTime": 1.59999999999756,
+        "ceAtPeak": 0.0607895232050325,
+        "peakTimeMinusTPeak": -2.44049225273102e-12
+      },
+      "peakSamples": [
         {
-          "ke0": 0.285540220471796,
-          "predPeak": 2.27752412168356,
-          "objective": 0.459038935463085
+          "ke0": 0.285530955051023,
+          "window": 809.924494111253,
+          "peakTime": 2.27755929327094
         },
         {
-          "ke0": 0.456864352754874,
-          "predPeak": 1.79565858872248,
-          "objective": 0.0382822833397147
+          "ke0": 0.456849528081637,
+          "window": 809.924494111253,
+          "peakTime": 1.79567882107085
         },
         {
-          "ke0": 0.542526418896412,
-          "predPeak": 1.64329200021753,
-          "objective": 0.00187419728281767
+          "ke0": 0.542508814596943,
+          "window": 809.924494111253,
+          "peakTime": 1.64332210888138
         },
         {
-          "ke0": 0.571080440943592,
-          "predPeak": 1.59998384963054,
-          "objective": 2.60834433730707e-10
+          "ke0": 0.571061910102046,
+          "window": 809.924494111253,
+          "peakTime": 1.59999999999756
         },
         {
-          "ke0": 0.599634462990772,
-          "predPeak": 1.55965149167965,
-          "objective": 0.00162800212367759
+          "ke0": 0.599615005607148,
+          "window": 809.924494111253,
+          "peakTime": 1.55966882369157
         },
         {
-          "ke0": 0.71385055117949,
-          "predPeak": 1.42236965210601,
-          "objective": 0.0315525404929393
+          "ke0": 0.713827387627557,
+          "window": 809.924494111253,
+          "peakTime": 1.42239669132765
         },
         {
-          "ke0": 1.14216088188718,
-          "predPeak": 1.10037427038395,
-          "objective": 0.249625869694369
+          "ke0": 1.14212382020409,
+          "window": 809.924494111253,
+          "peakTime": 1.1003895619759
         }
       ]
     },
@@ -646,62 +683,66 @@
         "age": 35,
         "sex": "female"
       },
+      "adjustToFFM": true,
+      "solve": "ke0FromTPeak",
       "tPeak": 1.6,
       "inputs": {
         "p_coef_bolus": [0.209684960812407, 0.0248324010151072, 0.000439521030666728],
         "lambda": [1.39152184813749, 0.134136466127706, 0.0239248460974325]
       },
-      "ke0": 0.359639302632144,
-      "ke0Resolved": 0.359639302632144,
-      "resolveIdentical": true,
-      "ke0PureRBrent": 0.359639302632144,
-      "pureRBrentIdentical": true,
-      "objectiveAtKe0": 5.55918614127873e-10,
-      "e_coef_bolus": [-0.0730809464773839, 0.039603525712543, 0.000470843700306363, 0.0330065770645345],
-      "roundTrip": {
-        "peakTimeInnerOptimize": 1.60002357792642,
-        "ceAtPeakInnerOptimize": 0.0430860027961889,
-        "peakTimeExact": 1.60001862703842,
-        "ceAtPeakExact": 0.0430860027963396,
-        "peakTimeMinusTPeak": 1.86270384225917e-05
+      "ke0": 0.359638856363646,
+      "bracket": {
+        "lower": 0.001,
+        "upper": 1,
+        "peakAtLower": 37.7817326194247,
+        "peakAtUpper": 0.943078534798647
       },
+      "ke0BeforeSeparation": 0.359638856363646,
+      "resolveIdentical": true,
       "ke0Exact": 0.359647382077346,
-      "ke0ExactRelativeDifference": 2.2465412268514e-05,
-      "objectiveSamples": [
+      "ke0ExactRelativeDifference": 2.37063196843161e-05,
+      "e_coef_bolus": [-0.0730808241868551, 0.0396035549445509, 0.000470843741943949, 0.0330064255003603],
+      "roundTrip": {
+        "window": 835.951040961818,
+        "peakTime": 1.59999999981376,
+        "ceAtPeak": 0.0430859676229185,
+        "peakTimeMinusTPeak": -1.8623858011324e-10
+      },
+      "peakSamples": [
         {
-          "ke0": 0.179819651316072,
-          "predPeak": 2.34156103487632,
-          "objective": 0.549912768446831
+          "ke0": 0.179819428181823,
+          "window": 835.951040961818,
+          "peakTime": 2.34157325078455
         },
         {
-          "ke0": 0.287711442105715,
-          "predPeak": 1.79851471948268,
-          "objective": 0.0394080938512889
+          "ke0": 0.287711085090917,
+          "window": 835.951040961818,
+          "peakTime": 1.79850356305917
         },
         {
-          "ke0": 0.341657337500537,
-          "predPeak": 1.64321621373124,
-          "objective": 0.00186764112926421
+          "ke0": 0.341656913545464,
+          "window": 835.951040961818,
+          "peakTime": 1.64320033136386
         },
         {
-          "ke0": 0.359639302632144,
-          "predPeak": 1.60002357792642,
-          "objective": 5.55918614127873e-10
+          "ke0": 0.359638856363646,
+          "window": 835.951040961818,
+          "peakTime": 1.59999999981376
         },
         {
-          "ke0": 0.377621267763751,
-          "predPeak": 1.5601345518119,
-          "objective": 0.00158925395923793
+          "ke0": 0.377620799181828,
+          "window": 835.951040961818,
+          "peakTime": 1.56013629155049
         },
         {
-          "ke0": 0.44954912829018,
-          "predPeak": 1.42633337618213,
-          "objective": 0.0301600962282966
+          "ke0": 0.449548570454558,
+          "window": 835.951040961818,
+          "peakTime": 1.42634162552366
         },
         {
-          "ke0": 0.719278605264289,
-          "predPeak": 1.12040137940733,
-          "objective": 0.230014836875052
+          "ke0": 0.719277712727292,
+          "window": 835.951040961818,
+          "peakTime": 1.12040614899494
         }
       ]
     },
@@ -714,62 +755,66 @@
         "age": 60,
         "sex": "male"
       },
+      "adjustToFFM": true,
+      "solve": "ke0FromTPeak",
       "tPeak": 1.6,
       "inputs": {
         "p_coef_bolus": [0.157219608262143, 0.0122356617819063, 0.00363468883392712],
         "lambda": [0.791861592664402, 0.111517473039133, 0.0605563827545955]
       },
-      "ke0": 0.582646948697672,
-      "ke0Resolved": 0.582646948697672,
-      "resolveIdentical": true,
-      "ke0PureRBrent": 0.582646948697672,
-      "pureRBrentIdentical": true,
-      "objectiveAtKe0": 1.18567373819467e-10,
-      "e_coef_bolus": [-0.43784470958901, 0.0151318721728448, 0.00405627011230851, 0.418656567303856],
-      "roundTrip": {
-        "peakTimeInnerOptimize": 1.59998911113533,
-        "ceAtPeakInnerOptimize": 0.057821774134063,
-        "peakTimeExact": 1.59998016278678,
-        "ceAtPeakExact": 0.0578217741349123,
-        "peakTimeMinusTPeak": -1.98372132171887e-05
+      "ke0": 0.582645188397187,
+      "bracket": {
+        "lower": 0.001,
+        "upper": 1,
+        "peakAtLower": 43.7694143548418,
+        "peakAtUpper": 1.19979763966249
       },
+      "ke0BeforeSeparation": 0.582645188397187,
+      "resolveIdentical": true,
       "ke0Exact": 0.58263297718672,
-      "ke0ExactRelativeDifference": -2.3979377191663e-05,
-      "objectiveSamples": [
+      "ke0ExactRelativeDifference": -2.09582275982628e-05,
+      "e_coef_bolus": [-0.437839702849644, 0.0151318829941155, 0.00405627153373284, 0.418651548321796],
+      "roundTrip": {
+        "window": 330.270717804429,
+        "peakTime": 1.59999999999731,
+        "ceAtPeak": 0.0578216831321954,
+        "peakTimeMinusTPeak": -2.69095856708645e-12
+      },
+      "peakSamples": [
         {
-          "ke0": 0.291323474348836,
-          "predPeak": 2.2636870281015,
-          "objective": 0.440480471270196
+          "ke0": 0.291322594198594,
+          "window": 330.270717804429,
+          "peakTime": 2.26367861613068
         },
         {
-          "ke0": 0.466117558958138,
-          "predPeak": 1.79329298706594,
-          "objective": 0.0373621788488721
+          "ke0": 0.46611615071775,
+          "window": 330.270717804429,
+          "peakTime": 1.79329274096318
         },
         {
-          "ke0": 0.553514601262789,
-          "predPeak": 1.64286809464422,
-          "objective": 0.00183767353842544
+          "ke0": 0.553512928977328,
+          "window": 330.270717804429,
+          "peakTime": 1.64287045799941
         },
         {
-          "ke0": 0.582646948697672,
-          "predPeak": 1.59998911113533,
-          "objective": 1.18567373819467e-10
+          "ke0": 0.582645188397187,
+          "window": 330.270717804429,
+          "peakTime": 1.59999999999731
         },
         {
-          "ke0": 0.611779296132556,
-          "predPeak": 1.56000946932524,
-          "objective": 0.00159924254364886
+          "ke0": 0.611777447817047,
+          "window": 330.270717804429,
+          "peakTime": 1.56001326934108
         },
         {
-          "ke0": 0.72830868587209,
-          "predPeak": 1.42363154900702,
-          "objective": 0.0311058305056632
+          "ke0": 0.728306485496484,
+          "window": 330.270717804429,
+          "peakTime": 1.42363660093854
         },
         {
-          "ke0": 1.16529389739534,
-          "predPeak": 1.10223356221072,
-          "objective": 0.24777142658943
+          "ke0": 1.16529037679437,
+          "window": 330.270717804429,
+          "peakTime": 1.10223471413511
         }
       ]
     },
@@ -782,62 +827,66 @@
         "age": 45,
         "sex": "female"
       },
+      "adjustToFFM": true,
+      "solve": "ke0FromTPeak",
       "tPeak": 1.6,
       "inputs": {
         "p_coef_bolus": [0.136068626923641, 0.0157268661160547, 0.00172650531128621],
         "lambda": [0.858840763435228, 0.12445526485458, 0.0500596155075874]
       },
-      "ke0": 0.561367814427213,
-      "ke0Resolved": 0.561367814427213,
-      "resolveIdentical": true,
-      "ke0PureRBrent": 0.561367814427213,
-      "pureRBrentIdentical": true,
-      "objectiveAtKe0": 1.26946659609078e-10,
-      "e_coef_bolus": [-0.256778130458438, 0.0202066900298348, 0.00189553876750188, 0.234675901661101],
-      "roundTrip": {
-        "peakTimeInnerOptimize": 1.60001126706065,
-        "ceAtPeakInnerOptimize": 0.0489137990233678,
-        "peakTimeExact": 1.60000214845364,
-        "ceAtPeakExact": 0.0489137990240973,
-        "peakTimeMinusTPeak": 2.14845364032712e-06
+      "ke0": 0.561369103286033,
+      "bracket": {
+        "lower": 0.001,
+        "upper": 1,
+        "peakAtLower": 41.641269678078,
+        "peakAtUpper": 1.17474544630689
       },
+      "ke0BeforeSeparation": 0.561369103286033,
+      "resolveIdentical": true,
       "ke0Exact": 0.561369262502988,
-      "ke0ExactRelativeDifference": 2.57954898487114e-06,
-      "objectiveSamples": [
+      "ke0ExactRelativeDifference": 2.8362258275631e-07,
+      "e_coef_bolus": [-0.256779832550019, 0.0202066768147337, 0.00189553834141892, 0.234677617393867],
+      "roundTrip": {
+        "window": 399.523643903511,
+        "peakTime": 1.59999999999648,
+        "ceAtPeak": 0.0489138587928806,
+        "peakTimeMinusTPeak": -3.5207392556913e-12
+      },
+      "peakSamples": [
         {
-          "ke0": 0.280683907213606,
-          "predPeak": 2.27611066389495,
-          "objective": 0.457125629832467
+          "ke0": 0.280684551643017,
+          "window": 399.523643903511,
+          "peakTime": 2.27610740542011
         },
         {
-          "ke0": 0.44909425154177,
-          "predPeak": 1.79520009129676,
-          "objective": 0.0381030756422665
+          "ke0": 0.449095282628827,
+          "window": 399.523643903511,
+          "peakTime": 1.7952031419877
         },
         {
-          "ke0": 0.533299423705852,
-          "predPeak": 1.64320871933863,
-          "objective": 0.00186699342684776
+          "ke0": 0.533300648121732,
+          "window": 399.523643903511,
+          "peakTime": 1.64320077960947
         },
         {
-          "ke0": 0.561367814427213,
-          "predPeak": 1.60001126706065,
-          "objective": 1.26946659609078e-10
+          "ke0": 0.561369103286033,
+          "window": 399.523643903511,
+          "peakTime": 1.59999999999648
         },
         {
-          "ke0": 0.589436205148573,
-          "predPeak": 1.55978334301737,
-          "objective": 0.00161737949885816
+          "ke0": 0.589437558450335,
+          "window": 399.523643903511,
+          "peakTime": 1.55977431846825
         },
         {
-          "ke0": 0.701709768034016,
-          "predPeak": 1.4228613227354,
-          "objective": 0.0313781109826271
+          "ke0": 0.701711379107542,
+          "window": 399.523643903511,
+          "peakTime": 1.42285597818178
         },
         {
-          "ke0": 1.12273562885443,
-          "predPeak": 1.10167793456355,
-          "objective": 0.248324880900846
+          "ke0": 1.12273820657207,
+          "window": 399.523643903511,
+          "peakTime": 1.10165869765837
         }
       ]
     },
@@ -850,62 +899,66 @@
         "age": 5,
         "sex": "male"
       },
+      "adjustToFFM": true,
+      "solve": "ke0FromTPeak",
       "tPeak": 1.6,
       "inputs": {
         "p_coef_bolus": [0.437455788577741, 0.0576595162935353, 0.00392074485333483],
         "lambda": [1.28113893480721, 0.172304066848654, 0.0173288126660117]
       },
-      "ke0": 0.396743558630881,
-      "ke0Resolved": 0.396743558630881,
-      "resolveIdentical": true,
-      "ke0PureRBrent": 0.396743558630881,
-      "pureRBrentIdentical": true,
-      "objectiveAtKe0": 1.2008509317774e-11,
-      "e_coef_bolus": [-0.196244542858632, 0.101925207108511, 0.00409981499701596, 0.0902195207531051],
-      "roundTrip": {
-        "peakTimeInnerOptimize": 1.59999653467039,
-        "ceAtPeakInnerOptimize": 0.103906689200474,
-        "peakTimeExact": 1.59998977015215,
-        "ceAtPeakExact": 0.103906689201198,
-        "peakTimeMinusTPeak": -1.0229847851928e-05
+      "ke0": 0.396740756973603,
+      "bracket": {
+        "lower": 0.001,
+        "upper": 1,
+        "peakAtLower": 92.5247865044137,
+        "peakAtUpper": 0.988582169702557
       },
+      "ke0BeforeSeparation": 0.396740756973603,
+      "resolveIdentical": true,
       "ke0Exact": 0.396738632475078,
-      "ke0ExactRelativeDifference": -1.24164733012024e-05,
-      "objectiveSamples": [
+      "ke0ExactRelativeDifference": -5.35487843757409e-06,
+      "e_coef_bolus": [-0.196242535379207, 0.101925759679906, 0.00409981631930742, 0.0902169593799938],
+      "roundTrip": {
+        "window": 1154.14716434828,
+        "peakTime": 1.59999999999982,
+        "ceAtPeak": 0.103906225103462,
+        "peakTimeMinusTPeak": -1.7963408538435e-13
+      },
+      "peakSamples": [
         {
-          "ke0": 0.198371779315441,
-          "predPeak": 2.31037085091941,
-          "objective": 0.504626745835972
+          "ke0": 0.198370378486802,
+          "window": 1154.14716434828,
+          "peakTime": 2.31039534897009
         },
         {
-          "ke0": 0.317394846904705,
-          "predPeak": 1.7957249864251,
-          "objective": 0.0383082703111053
+          "ke0": 0.317392605578882,
+          "window": 1154.14716434828,
+          "peakTime": 1.79573287916003
         },
         {
-          "ke0": 0.376906380699337,
-          "predPeak": 1.64284754007601,
-          "objective": 0.00183591169056563
+          "ke0": 0.376903719124923,
+          "window": 1154.14716434828,
+          "peakTime": 1.64283316778695
         },
         {
-          "ke0": 0.396743558630881,
-          "predPeak": 1.59999653467039,
-          "objective": 1.2008509317774e-11
+          "ke0": 0.396740756973603,
+          "window": 1154.14716434828,
+          "peakTime": 1.59999999999982
         },
         {
-          "ke0": 0.416580736562425,
-          "predPeak": 1.56030738847889,
-          "objective": 0.001575503409366
+          "ke0": 0.416577794822283,
+          "window": 1154.14716434828,
+          "peakTime": 1.56030514453453
         },
         {
-          "ke0": 0.495929448288601,
-          "predPeak": 1.42647626458564,
-          "objective": 0.0301104867520278
+          "ke0": 0.495925946217004,
+          "window": 1154.14716434828,
+          "peakTime": 1.42647332472732
         },
         {
-          "ke0": 0.793487117261762,
-          "predPeak": 1.11763818709696,
-          "objective": 0.232672918547108
+          "ke0": 0.793481513947206,
+          "window": 1154.14716434828,
+          "peakTime": 1.11764267872446
         }
       ]
     },
@@ -918,62 +971,66 @@
         "age": 80,
         "sex": "female"
       },
+      "adjustToFFM": true,
+      "solve": "ke0FromTPeak",
       "tPeak": 1.6,
       "inputs": {
         "p_coef_bolus": [0.215758415034447, 0.0199391039362342, 0.000232435271490349],
         "lambda": [0.853195043241262, 0.0973472963042479, 0.0304157847544928]
       },
-      "ke0": 0.538456733911737,
-      "ke0Resolved": 0.538456733911737,
-      "resolveIdentical": true,
-      "ke0PureRBrent": 0.538456733911737,
-      "pureRBrentIdentical": true,
-      "objectiveAtKe0": 7.83660294514787e-11,
-      "e_coef_bolus": [-0.369121165202, 0.0243394130056787, 0.000246350884392675, 0.344535401311929],
-      "roundTrip": {
-        "peakTimeInnerOptimize": 1.60000885245895,
-        "ceAtPeakInnerOptimize": 0.072379007570044,
-        "peakTimeExact": 1.59999988224465,
-        "ceAtPeakExact": 0.0723790075710985,
-        "peakTimeMinusTPeak": -1.17755351247695e-07
+      "ke0": 0.538449192778519,
+      "bracket": {
+        "lower": 0.001,
+        "upper": 1,
+        "peakAtLower": 40.7926280959207,
+        "peakAtUpper": 1.15615181895756
       },
+      "ke0BeforeSeparation": 0.538449192778519,
+      "resolveIdentical": true,
       "ke0Exact": 0.538456655812185,
-      "ke0ExactRelativeDifference": -1.45043320857971e-07,
-      "objectiveSamples": [
+      "ke0ExactRelativeDifference": 1.38602374478253e-05,
+      "e_coef_bolus": [-0.369107151816837, 0.0243394882339131, 0.000246351090952891, 0.344521312491971],
+      "roundTrip": {
+        "window": 657.55331192123,
+        "peakTime": 1.5999999969809,
+        "ceAtPeak": 0.072378454132395,
+        "peakTimeMinusTPeak": -3.01910030309216e-09
+      },
+      "peakSamples": [
         {
-          "ke0": 0.269228366955869,
-          "predPeak": 2.25133471300148,
-          "objective": 0.42423690836072
+          "ke0": 0.26922459638926,
+          "window": 657.55331192123,
+          "peakTime": 2.25134426241313
         },
         {
-          "ke0": 0.43076538712939,
-          "predPeak": 1.78964463037263,
-          "objective": 0.035965085829173
+          "ke0": 0.430759354222815,
+          "window": 657.55331192123,
+          "peakTime": 1.78965672307755
         },
         {
-          "ke0": 0.511533897216151,
-          "predPeak": 1.64208599602592,
-          "objective": 0.00177123106149354
+          "ke0": 0.511526733139593,
+          "window": 657.55331192123,
+          "peakTime": 1.64209170827757
         },
         {
-          "ke0": 0.538456733911737,
-          "predPeak": 1.60000885245895,
-          "objective": 7.83660294514787e-11
+          "ke0": 0.538449192778519,
+          "window": 657.55331192123,
+          "peakTime": 1.5999999969809
         },
         {
-          "ke0": 0.565379570607324,
-          "predPeak": 1.56076805280818,
-          "objective": 0.00153914568046207
+          "ke0": 0.565371652417445,
+          "window": 657.55331192123,
+          "peakTime": 1.56079534891942
         },
         {
-          "ke0": 0.673070917389672,
-          "predPeak": 1.42682300015917,
-          "objective": 0.0299902732738698
+          "ke0": 0.673061490973149,
+          "window": 657.55331192123,
+          "peakTime": 1.42684062145702
         },
         {
-          "ke0": 1.07691346782347,
-          "predPeak": 1.11032053471431,
-          "objective": 0.239785978722478
+          "ke0": 1.07689838555704,
+          "window": 657.55331192123,
+          "peakTime": 1.11032893042463
         }
       ]
     },
@@ -986,62 +1043,66 @@
         "age": 25,
         "sex": "female"
       },
+      "adjustToFFM": true,
+      "solve": "ke0FromTPeak",
       "tPeak": 1.6,
       "inputs": {
         "p_coef_bolus": [0.241887147197028, 0.0294884925917797, 0.000661780710684172],
         "lambda": [1.5843431505189, 0.148977436708993, 0.0216722196991006]
       },
-      "ke0": 0.32599386541982,
-      "ke0Resolved": 0.32599386541982,
-      "resolveIdentical": true,
-      "ke0PureRBrent": 0.32599386541982,
-      "pureRBrentIdentical": true,
-      "objectiveAtKe0": 6.60669171780026e-11,
-      "e_coef_bolus": [-0.0626644184121922, 0.0543060763083287, 0.000708909323309172, 0.00764943278055434],
-      "roundTrip": {
-        "peakTimeInnerOptimize": 1.60000812815583,
-        "ceAtPeakInnerOptimize": 0.043046747048295,
-        "peakTimeExact": 1.60000886890339,
-        "ceAtPeakExact": 0.043046747048298,
-        "peakTimeMinusTPeak": 8.86890339124591e-06
+      "ke0": 0.325995494293391,
+      "bracket": {
+        "lower": 0.001,
+        "upper": 1,
+        "peakAtLower": 39.9558914055465,
+        "peakAtUpper": 0.890913934550575
       },
+      "ke0BeforeSeparation": 0.325995494293391,
+      "resolveIdentical": true,
       "ke0Exact": 0.325997204805644,
-      "ke0ExactRelativeDifference": 1.02437075619906e-05,
-      "objectiveSamples": [
+      "ke0ExactRelativeDifference": 5.24704262261835e-06,
+      "e_coef_bolus": [-0.0626648126402847, 0.0543058479434558, 0.000708909071055868, 0.00765005562577301],
+      "roundTrip": {
+        "window": 922.840404798499,
+        "peakTime": 1.59999999805446,
+        "ceAtPeak": 0.0430468934945748,
+        "peakTimeMinusTPeak": -1.9455448363459e-09
+      },
+      "peakSamples": [
         {
-          "ke0": 0.16299693270991,
-          "predPeak": 2.43220889177487,
-          "objective": 0.692571639592519
+          "ke0": 0.162997747146695,
+          "window": 922.840404798499,
+          "peakTime": 2.43218896328989
         },
         {
-          "ke0": 0.260795092335856,
-          "predPeak": 1.81061487003665,
-          "objective": 0.044358623480557
+          "ke0": 0.260796395434713,
+          "window": 922.840404798499,
+          "peakTime": 1.81060663664064
         },
         {
-          "ke0": 0.309694172148829,
-          "predPeak": 1.64525197110764,
-          "objective": 0.00204774088912663
+          "ke0": 0.309695719578721,
+          "window": 922.840404798499,
+          "peakTime": 1.64525034691667
         },
         {
-          "ke0": 0.32599386541982,
-          "predPeak": 1.60000812815583,
-          "objective": 6.60669171780026e-11
+          "ke0": 0.325995494293391,
+          "window": 922.840404798499,
+          "peakTime": 1.59999999805446
         },
         {
-          "ke0": 0.342293558690811,
-          "predPeak": 1.55848126605586,
-          "objective": 0.00172380526832429
+          "ke0": 0.34229526900806,
+          "window": 922.840404798499,
+          "peakTime": 1.55849123168221
         },
         {
-          "ke0": 0.407492331774775,
-          "predPeak": 1.4208028823238,
-          "objective": 0.0321116069834578
+          "ke0": 0.407494367866738,
+          "window": 922.840404798499,
+          "peakTime": 1.4207992755593
         },
         {
-          "ke0": 0.651987730839639,
-          "predPeak": 1.11327415793594,
-          "objective": 0.236902045331701
+          "ke0": 0.651990988586781,
+          "window": 922.840404798499,
+          "peakTime": 1.11327045545256
         }
       ]
     },
@@ -1054,62 +1115,2258 @@
         "age": 0,
         "sex": "male"
       },
+      "adjustToFFM": true,
+      "solve": "ke0FromTPeak",
       "tPeak": 1.6,
       "inputs": {
         "p_coef_bolus": [2.21340145909336, 0.371403524206216, 0.0410588499915822],
         "lambda": [1.79608996927269, 0.242346572263854, 0.0170547827857456]
       },
-      "ke0": 0.342846211228476,
-      "ke0Resolved": 0.342846211228476,
-      "resolveIdentical": true,
-      "ke0PureRBrent": 0.342846211228476,
-      "pureRBrentIdentical": true,
-      "objectiveAtKe0": 6.53167254419059e-10,
-      "e_coef_bolus": [-0.522181017449554, 1.26701242335636, 0.0432082305673269, -0.788039636474129],
-      "roundTrip": {
-        "peakTimeInnerOptimize": 1.60002555713705,
-        "ceAtPeakInnerOptimize": 0.416999298746685,
-        "peakTimeExact": 1.60003284869161,
-        "ceAtPeakExact": 0.416999298749294,
-        "peakTimeMinusTPeak": 3.28486916110204e-05
+      "ke0": 0.342863894447156,
+      "bracket": {
+        "lower": 0.001,
+        "upper": 1,
+        "peakAtLower": 130.939435066485,
+        "peakAtUpper": 0.878588934717627
       },
-      "ke0Exact": 0.342857837637687,
-      "ke0ExactRelativeDifference": 3.39114414282889e-05,
-      "objectiveSamples": [
+      "ke0BeforeSeparation": 0.342863894447156,
+      "resolveIdentical": true,
+      "ke0Exact": 0.342857837637686,
+      "ke0ExactRelativeDifference": -1.76653464165455e-05,
+      "e_coef_bolus": [-0.522214304701956, 1.26685486595559, 0.0432081139101636, -0.787848675163796],
+      "roundTrip": {
+        "window": 1172.6915699399,
+        "peakTime": 1.60000000082171,
+        "ceAtPeak": 0.417013603335294,
+        "peakTimeMinusTPeak": 8.21713364018706e-10
+      },
+      "peakSamples": [
         {
-          "ke0": 0.171423105614238,
-          "predPeak": 2.5909667909209,
-          "objective": 0.982015180708074
+          "ke0": 0.171431947223578,
+          "window": 1172.6915699399,
+          "peakTime": 2.59087574824207
         },
         {
-          "ke0": 0.274276968982781,
-          "predPeak": 1.8404353597655,
-          "objective": 0.0578091622255653
+          "ke0": 0.274291115557725,
+          "window": 1172.6915699399,
+          "peakTime": 1.84037711536652
         },
         {
-          "ke0": 0.325703900667052,
-          "predPeak": 1.65089567546947,
-          "objective": 0.00259036978146439
+          "ke0": 0.325720699724798,
+          "window": 1172.6915699399,
+          "peakTime": 1.65082064427522
         },
         {
-          "ke0": 0.342846211228476,
-          "predPeak": 1.60002555713705,
-          "objective": 6.53167254419059e-10
+          "ke0": 0.342863894447156,
+          "window": 1172.6915699399,
+          "peakTime": 1.60000000082171
         },
         {
-          "ke0": 0.359988521789899,
-          "predPeak": 1.55375510612035,
-          "objective": 0.00213859020993976
+          "ke0": 0.360007089169513,
+          "window": 1172.6915699399,
+          "peakTime": 1.55371525036551
         },
         {
-          "ke0": 0.428557764035595,
-          "predPeak": 1.40294576308539,
-          "objective": 0.0388303722859974
+          "ke0": 0.428579868058944,
+          "window": 1172.6915699399,
+          "peakTime": 1.40288850103185
         },
         {
-          "ke0": 0.685692422456951,
-          "predPeak": 1.07927139170536,
-          "objective": 0.271158283496474
+          "ke0": 0.685727788894311,
+          "window": 1172.6915699399,
+          "peakTime": 1.07923990866197
+        }
+      ]
+    },
+    {
+      "drug": "sufentanil",
+      "patientId": "adult-male-70",
+      "patient": {
+        "weight": 70,
+        "height": 170,
+        "age": 50,
+        "sex": "male"
+      },
+      "adjustToFFM": true,
+      "solve": "ke0FromTPeak",
+      "tPeak": 5.6,
+      "inputs": {
+        "p_coef_bolus": [0.0648783915380957, 0.00475865255861049, 0.000292983789630185],
+        "lambda": [0.21028012297924, 0.0104417479892164, 0.000907943248449561]
+      },
+      "ke0": 0.175766934324882,
+      "bracket": {
+        "lower": 0.001,
+        "upper": 1,
+        "peakAtLower": 232.91103357826,
+        "peakAtUpper": 2.04526240919589
+      },
+      "ke0BeforeSeparation": 0.175766934324882,
+      "resolveIdentical": true,
+      "ke0Exact": 0.175767647091285,
+      "ke0ExactRelativeDifference": 4.05517912603517e-06,
+      "e_coef_bolus": [-0.33040922699968, 0.00505920356288618, 0.00029450508774624, 0.325055518349047],
+      "roundTrip": {
+        "window": 4000,
+        "peakTime": 5.60000000000135,
+        "ceAtPeak": 0.0247641018518395,
+        "peakTimeMinusTPeak": 1.35091937636389e-12
+      },
+      "peakSamples": [
+        {
+          "ke0": 0.0878834671624411,
+          "window": 4000,
+          "peakTime": 7.95823346473481
+        },
+        {
+          "ke0": 0.140613547459906,
+          "window": 4000,
+          "peakTime": 6.28582834427713
+        },
+        {
+          "ke0": 0.166978587608638,
+          "window": 4000,
+          "peakTime": 5.75206909585025
+        },
+        {
+          "ke0": 0.175766934324882,
+          "window": 4000,
+          "peakTime": 5.60000000000135
+        },
+        {
+          "ke0": 0.184555281041126,
+          "window": 4000,
+          "peakTime": 5.45838061642333
+        },
+        {
+          "ke0": 0.219708667906103,
+          "window": 4000,
+          "peakTime": 4.97522595811504
+        },
+        {
+          "ke0": 0.351533868649764,
+          "window": 4000,
+          "peakTime": 3.83912856587601
+        }
+      ]
+    },
+    {
+      "drug": "sufentanil",
+      "patientId": "adult-male-70",
+      "patient": {
+        "weight": 70,
+        "height": 170,
+        "age": 50,
+        "sex": "male"
+      },
+      "adjustToFFM": false,
+      "solve": "ke0FromTPeak",
+      "tPeak": 5.6,
+      "inputs": {
+        "p_coef_bolus": [0.0648784305446554, 0.00475865541963503, 0.000292983965779499],
+        "lambda": [0.210280154585689, 0.0104417495586779, 0.000907943384919355]
+      },
+      "ke0": 0.175766910299378,
+      "bracket": {
+        "lower": 0.001,
+        "upper": 1,
+        "peakAtLower": 232.911016204041,
+        "peakAtUpper": 2.04526229786324
+      },
+      "ke0BeforeSeparation": 0.175766910299378,
+      "resolveIdentical": true,
+      "ke0Exact": 0.175767623065557,
+      "ke0ExactRelativeDifference": 4.05517840378118e-06,
+      "e_coef_bolus": [-0.330408847899297, 0.00505920669631461, 0.000294505265249071, 0.325055135937733],
+      "roundTrip": {
+        "window": 4000,
+        "peakTime": 5.60000000000127,
+        "ceAtPeak": 0.0247641131638543,
+        "peakTimeMinusTPeak": 1.27364785384998e-12
+      },
+      "peakSamples": [
+        {
+          "ke0": 0.0878834551496892,
+          "window": 4000,
+          "peakTime": 7.95823339590205
+        },
+        {
+          "ke0": 0.140613528239503,
+          "window": 4000,
+          "peakTime": 6.28582832313316
+        },
+        {
+          "ke0": 0.16697856478441,
+          "window": 4000,
+          "peakTime": 5.75206909118668
+        },
+        {
+          "ke0": 0.175766910299378,
+          "window": 4000,
+          "peakTime": 5.60000000000127
+        },
+        {
+          "ke0": 0.184555255814347,
+          "window": 4000,
+          "peakTime": 5.45838062073092
+        },
+        {
+          "ke0": 0.219708637874223,
+          "window": 4000,
+          "peakTime": 4.97522597669068
+        },
+        {
+          "ke0": 0.351533820598757,
+          "window": 4000,
+          "peakTime": 3.83912861337716
+        }
+      ]
+    },
+    {
+      "drug": "sufentanil",
+      "patientId": "adult-female-60",
+      "patient": {
+        "weight": 60,
+        "height": 165,
+        "age": 35,
+        "sex": "female"
+      },
+      "adjustToFFM": true,
+      "solve": "ke0FromTPeak",
+      "tPeak": 5.6,
+      "inputs": {
+        "p_coef_bolus": [0.0885247570314065, 0.00649304878806242, 0.000399768215214294],
+        "lambda": [0.227268575385278, 0.0112853328998461, 0.000981295643555272]
+      },
+      "ke0": 0.163586934813942,
+      "bracket": {
+        "lower": 0.001,
+        "upper": 1,
+        "peakAtLower": 224.086751158098,
+        "peakAtUpper": 1.98811259329671
+      },
+      "ke0BeforeSeparation": 0.163586934813942,
+      "resolveIdentical": true,
+      "ke0Exact": 0.163587653593938,
+      "ke0ExactRelativeDifference": 4.39387165848854e-06,
+      "e_coef_bolus": [-0.227404531792713, 0.00697417450300767, 0.000402180744140248, 0.220028176545565],
+      "roundTrip": {
+        "window": 4000,
+        "peakTime": 5.59999999958443,
+        "ceAtPeak": 0.031286323045451,
+        "peakTimeMinusTPeak": -4.15572465328751e-10
+      },
+      "peakSamples": [
+        {
+          "ke0": 0.0817934674069708,
+          "window": 4000,
+          "peakTime": 7.9251755578987
+        },
+        {
+          "ke0": 0.130869547851153,
+          "window": 4000,
+          "peakTime": 6.27531425328337
+        },
+        {
+          "ke0": 0.155407588073244,
+          "window": 4000,
+          "peakTime": 5.7497361169265
+        },
+        {
+          "ke0": 0.163586934813942,
+          "window": 4000,
+          "peakTime": 5.59999999958443
+        },
+        {
+          "ke0": 0.171766281554639,
+          "window": 4000,
+          "peakTime": 5.46054403422277
+        },
+        {
+          "ke0": 0.204483668517427,
+          "window": 4000,
+          "peakTime": 4.98461486350855
+        },
+        {
+          "ke0": 0.327173869627883,
+          "window": 4000,
+          "peakTime": 3.86344107713111
+        }
+      ]
+    },
+    {
+      "drug": "sufentanil",
+      "patientId": "adult-female-60",
+      "patient": {
+        "weight": 60,
+        "height": 165,
+        "age": 35,
+        "sex": "female"
+      },
+      "adjustToFFM": false,
+      "solve": "ke0FromTPeak",
+      "tPeak": 5.6,
+      "inputs": {
+        "p_coef_bolus": [0.0648784305446554, 0.00475865541963503, 0.000292983965779499],
+        "lambda": [0.210280154585689, 0.0104417495586779, 0.000907943384919355]
+      },
+      "ke0": 0.175766910299378,
+      "bracket": {
+        "lower": 0.001,
+        "upper": 1,
+        "peakAtLower": 232.911016204041,
+        "peakAtUpper": 2.04526229786324
+      },
+      "ke0BeforeSeparation": 0.175766910299378,
+      "resolveIdentical": true,
+      "ke0Exact": 0.175767623065557,
+      "ke0ExactRelativeDifference": 4.05517840378118e-06,
+      "e_coef_bolus": [-0.330408847899297, 0.00505920669631461, 0.000294505265249071, 0.325055135937733],
+      "roundTrip": {
+        "window": 4000,
+        "peakTime": 5.60000000000127,
+        "ceAtPeak": 0.0247641131638543,
+        "peakTimeMinusTPeak": 1.27364785384998e-12
+      },
+      "peakSamples": [
+        {
+          "ke0": 0.0878834551496892,
+          "window": 4000,
+          "peakTime": 7.95823339590205
+        },
+        {
+          "ke0": 0.140613528239503,
+          "window": 4000,
+          "peakTime": 6.28582832313316
+        },
+        {
+          "ke0": 0.16697856478441,
+          "window": 4000,
+          "peakTime": 5.75206909118668
+        },
+        {
+          "ke0": 0.175766910299378,
+          "window": 4000,
+          "peakTime": 5.60000000000127
+        },
+        {
+          "ke0": 0.184555255814347,
+          "window": 4000,
+          "peakTime": 5.45838062073092
+        },
+        {
+          "ke0": 0.219708637874223,
+          "window": 4000,
+          "peakTime": 4.97522597669068
+        },
+        {
+          "ke0": 0.351533820598757,
+          "window": 4000,
+          "peakTime": 3.83912861337716
+        }
+      ]
+    },
+    {
+      "drug": "sufentanil",
+      "patientId": "obese-male-100",
+      "patient": {
+        "weight": 100,
+        "height": 180,
+        "age": 60,
+        "sex": "male"
+      },
+      "adjustToFFM": true,
+      "solve": "ke0FromTPeak",
+      "tPeak": 5.6,
+      "inputs": {
+        "p_coef_bolus": [0.0508852949938262, 0.00373229720215613, 0.000229792481137318],
+        "lambda": [0.197888828684255, 0.00982644127141868, 0.000854440369360152]
+      },
+      "ke0": 0.18561487774065,
+      "bracket": {
+        "lower": 0.001,
+        "upper": 1,
+        "peakAtLower": 240.024142447477,
+        "peakAtUpper": 2.09046338773147
+      },
+      "ke0BeforeSeparation": 0.18561487774065,
+      "resolveIdentical": true,
+      "ke0Exact": 0.185615594728377,
+      "ke0ExactRelativeDifference": 3.86277078603226e-06,
+      "e_coef_bolus": [-0.769521391479656, 0.00394092980621758, 0.000230855176026184, 0.765349606497412],
+      "roundTrip": {
+        "window": 4000,
+        "peakTime": 5.60000000002208,
+        "ceAtPeak": 0.0205614183557402,
+        "peakTimeMinusTPeak": 2.20810036921648e-11
+      },
+      "peakSamples": [
+        {
+          "ke0": 0.0928074388703252,
+          "window": 4000,
+          "peakTime": 7.98738023992706
+        },
+        {
+          "ke0": 0.14849190219252,
+          "window": 4000,
+          "peakTime": 6.29459227945517
+        },
+        {
+          "ke0": 0.176334133853618,
+          "window": 4000,
+          "peakTime": 5.75398908985373
+        },
+        {
+          "ke0": 0.18561487774065,
+          "window": 4000,
+          "peakTime": 5.60000000002208
+        },
+        {
+          "ke0": 0.194895621627683,
+          "window": 4000,
+          "peakTime": 5.45661127486203
+        },
+        {
+          "ke0": 0.232018597175813,
+          "window": 4000,
+          "peakTime": 4.96762317032946
+        },
+        {
+          "ke0": 0.371229755481301,
+          "window": 4000,
+          "peakTime": 3.81983865041744
+        }
+      ]
+    },
+    {
+      "drug": "sufentanil",
+      "patientId": "obese-male-100",
+      "patient": {
+        "weight": 100,
+        "height": 180,
+        "age": 60,
+        "sex": "male"
+      },
+      "adjustToFFM": false,
+      "solve": "ke0FromTPeak",
+      "tPeak": 5.6,
+      "inputs": {
+        "p_coef_bolus": [0.0648784305446554, 0.00475865541963503, 0.000292983965779499],
+        "lambda": [0.210280154585689, 0.0104417495586779, 0.000907943384919355]
+      },
+      "ke0": 0.175766910299378,
+      "bracket": {
+        "lower": 0.001,
+        "upper": 1,
+        "peakAtLower": 232.911016204041,
+        "peakAtUpper": 2.04526229786324
+      },
+      "ke0BeforeSeparation": 0.175766910299378,
+      "resolveIdentical": true,
+      "ke0Exact": 0.175767623065557,
+      "ke0ExactRelativeDifference": 4.05517840378118e-06,
+      "e_coef_bolus": [-0.330408847899297, 0.00505920669631461, 0.000294505265249071, 0.325055135937733],
+      "roundTrip": {
+        "window": 4000,
+        "peakTime": 5.60000000000127,
+        "ceAtPeak": 0.0247641131638543,
+        "peakTimeMinusTPeak": 1.27364785384998e-12
+      },
+      "peakSamples": [
+        {
+          "ke0": 0.0878834551496892,
+          "window": 4000,
+          "peakTime": 7.95823339590205
+        },
+        {
+          "ke0": 0.140613528239503,
+          "window": 4000,
+          "peakTime": 6.28582832313316
+        },
+        {
+          "ke0": 0.16697856478441,
+          "window": 4000,
+          "peakTime": 5.75206909118668
+        },
+        {
+          "ke0": 0.175766910299378,
+          "window": 4000,
+          "peakTime": 5.60000000000127
+        },
+        {
+          "ke0": 0.184555255814347,
+          "window": 4000,
+          "peakTime": 5.45838062073092
+        },
+        {
+          "ke0": 0.219708637874223,
+          "window": 4000,
+          "peakTime": 4.97522597669068
+        },
+        {
+          "ke0": 0.351533820598757,
+          "window": 4000,
+          "peakTime": 3.83912861337716
+        }
+      ]
+    },
+    {
+      "drug": "sufentanil",
+      "patientId": "obese-female-120",
+      "patient": {
+        "weight": 120,
+        "height": 175,
+        "age": 45,
+        "sex": "female"
+      },
+      "adjustToFFM": true,
+      "solve": "ke0FromTPeak",
+      "tPeak": 5.6,
+      "inputs": {
+        "p_coef_bolus": [0.0575376456442344, 0.00422022892630731, 0.000259833776201828],
+        "lambda": [0.204061570881726, 0.0101329572536009, 0.000881092910376399]
+      },
+      "ke0": 0.180599752370623,
+      "bracket": {
+        "lower": 0.001,
+        "upper": 1,
+        "peakAtLower": 236.403617912789,
+        "peakAtUpper": 2.06753219497954
+      },
+      "ke0BeforeSeparation": 0.180599752370623,
+      "resolveIdentical": true,
+      "ke0Exact": 0.180600466253553,
+      "ke0ExactRelativeDifference": 3.95284556447465e-06,
+      "e_coef_bolus": [-0.442901923839364, 0.00447108950757961, 0.000261107643360504, 0.438169726688424],
+      "roundTrip": {
+        "window": 4000,
+        "peakTime": 5.59999999998003,
+        "ceAtPeak": 0.0225971264127433,
+        "peakTimeMinusTPeak": -1.99733563022164e-11
+      },
+      "peakSamples": [
+        {
+          "ke0": 0.0902998761853116,
+          "window": 4000,
+          "peakTime": 7.97232665130662
+        },
+        {
+          "ke0": 0.144479801896499,
+          "window": 4000,
+          "peakTime": 6.29010799097115
+        },
+        {
+          "ke0": 0.171569764752092,
+          "window": 4000,
+          "peakTime": 5.75300913101987
+        },
+        {
+          "ke0": 0.180599752370623,
+          "window": 4000,
+          "peakTime": 5.59999999998003
+        },
+        {
+          "ke0": 0.189629739989154,
+          "window": 4000,
+          "peakTime": 5.45751338117639
+        },
+        {
+          "ke0": 0.225749690463279,
+          "window": 4000,
+          "peakTime": 4.97149208440138
+        },
+        {
+          "ke0": 0.361199504741246,
+          "window": 4000,
+          "peakTime": 3.82961562006832
+        }
+      ]
+    },
+    {
+      "drug": "sufentanil",
+      "patientId": "obese-female-120",
+      "patient": {
+        "weight": 120,
+        "height": 175,
+        "age": 45,
+        "sex": "female"
+      },
+      "adjustToFFM": false,
+      "solve": "ke0FromTPeak",
+      "tPeak": 5.6,
+      "inputs": {
+        "p_coef_bolus": [0.0648784305446554, 0.00475865541963503, 0.000292983965779499],
+        "lambda": [0.210280154585689, 0.0104417495586779, 0.000907943384919355]
+      },
+      "ke0": 0.175766910299378,
+      "bracket": {
+        "lower": 0.001,
+        "upper": 1,
+        "peakAtLower": 232.911016204041,
+        "peakAtUpper": 2.04526229786324
+      },
+      "ke0BeforeSeparation": 0.175766910299378,
+      "resolveIdentical": true,
+      "ke0Exact": 0.175767623065557,
+      "ke0ExactRelativeDifference": 4.05517840378118e-06,
+      "e_coef_bolus": [-0.330408847899297, 0.00505920669631461, 0.000294505265249071, 0.325055135937733],
+      "roundTrip": {
+        "window": 4000,
+        "peakTime": 5.60000000000127,
+        "ceAtPeak": 0.0247641131638543,
+        "peakTimeMinusTPeak": 1.27364785384998e-12
+      },
+      "peakSamples": [
+        {
+          "ke0": 0.0878834551496892,
+          "window": 4000,
+          "peakTime": 7.95823339590205
+        },
+        {
+          "ke0": 0.140613528239503,
+          "window": 4000,
+          "peakTime": 6.28582832313316
+        },
+        {
+          "ke0": 0.16697856478441,
+          "window": 4000,
+          "peakTime": 5.75206909118668
+        },
+        {
+          "ke0": 0.175766910299378,
+          "window": 4000,
+          "peakTime": 5.60000000000127
+        },
+        {
+          "ke0": 0.184555255814347,
+          "window": 4000,
+          "peakTime": 5.45838062073092
+        },
+        {
+          "ke0": 0.219708637874223,
+          "window": 4000,
+          "peakTime": 4.97522597669068
+        },
+        {
+          "ke0": 0.351533820598757,
+          "window": 4000,
+          "peakTime": 3.83912861337716
+        }
+      ]
+    },
+    {
+      "drug": "sufentanil",
+      "patientId": "child-male-20",
+      "patient": {
+        "weight": 20,
+        "height": 110,
+        "age": 5,
+        "sex": "male"
+      },
+      "adjustToFFM": true,
+      "solve": "ke0FromTPeak",
+      "tPeak": 5.6,
+      "inputs": {
+        "p_coef_bolus": [0.222044984714768, 0.0162863922731366, 0.00100273110272623],
+        "lambda": [0.286011467178171, 0.0142022917810225, 0.00123493450985487]
+      },
+      "ke0": 0.130608982341211,
+      "bracket": {
+        "lower": 0.001,
+        "upper": 1,
+        "peakAtLower": 199.875481631985,
+        "peakAtUpper": 1.82383816615295
+      },
+      "ke0BeforeSeparation": 0.130608982341211,
+      "resolveIdentical": true,
+      "ke0Exact": 0.130609801251456,
+      "ke0ExactRelativeDifference": 6.2699381774474e-06,
+      "e_coef_bolus": [-0.186619084746244, 0.0182734266438429, 0.00101230263012001, 0.167333355472282],
+      "roundTrip": {
+        "window": 4000,
+        "peakTime": 5.59999999627515,
+        "ceAtPeak": 0.0607924180963026,
+        "peakTimeMinusTPeak": -3.72485331467942e-09
+      },
+      "peakSamples": [
+        {
+          "ke0": 0.0653044911706055,
+          "window": 4000,
+          "peakTime": 7.86947816517434
+        },
+        {
+          "ke0": 0.104487185872969,
+          "window": 4000,
+          "peakTime": 6.25140405214199
+        },
+        {
+          "ke0": 0.12407853322415,
+          "window": 4000,
+          "peakTime": 5.74414825636883
+        },
+        {
+          "ke0": 0.130608982341211,
+          "window": 4000,
+          "peakTime": 5.59999999627515
+        },
+        {
+          "ke0": 0.137139431458272,
+          "window": 4000,
+          "peakTime": 5.46585576003038
+        },
+        {
+          "ke0": 0.163261227926514,
+          "window": 4000,
+          "peakTime": 5.00851433300804
+        },
+        {
+          "ke0": 0.261217964682422,
+          "window": 4000,
+          "peakTime": 3.92965305550495
+        }
+      ]
+    },
+    {
+      "drug": "sufentanil",
+      "patientId": "child-male-20",
+      "patient": {
+        "weight": 20,
+        "height": 110,
+        "age": 5,
+        "sex": "male"
+      },
+      "adjustToFFM": false,
+      "solve": "ke0FromTPeak",
+      "tPeak": 5.6,
+      "inputs": {
+        "p_coef_bolus": [0.0648784305446554, 0.00475865541963503, 0.000292983965779499],
+        "lambda": [0.210280154585689, 0.0104417495586779, 0.000907943384919355]
+      },
+      "ke0": 0.175766910299378,
+      "bracket": {
+        "lower": 0.001,
+        "upper": 1,
+        "peakAtLower": 232.911016204041,
+        "peakAtUpper": 2.04526229786324
+      },
+      "ke0BeforeSeparation": 0.175766910299378,
+      "resolveIdentical": true,
+      "ke0Exact": 0.175767623065557,
+      "ke0ExactRelativeDifference": 4.05517840378118e-06,
+      "e_coef_bolus": [-0.330408847899297, 0.00505920669631461, 0.000294505265249071, 0.325055135937733],
+      "roundTrip": {
+        "window": 4000,
+        "peakTime": 5.60000000000127,
+        "ceAtPeak": 0.0247641131638543,
+        "peakTimeMinusTPeak": 1.27364785384998e-12
+      },
+      "peakSamples": [
+        {
+          "ke0": 0.0878834551496892,
+          "window": 4000,
+          "peakTime": 7.95823339590205
+        },
+        {
+          "ke0": 0.140613528239503,
+          "window": 4000,
+          "peakTime": 6.28582832313316
+        },
+        {
+          "ke0": 0.16697856478441,
+          "window": 4000,
+          "peakTime": 5.75206909118668
+        },
+        {
+          "ke0": 0.175766910299378,
+          "window": 4000,
+          "peakTime": 5.60000000000127
+        },
+        {
+          "ke0": 0.184555255814347,
+          "window": 4000,
+          "peakTime": 5.45838062073092
+        },
+        {
+          "ke0": 0.219708637874223,
+          "window": 4000,
+          "peakTime": 4.97522597669068
+        },
+        {
+          "ke0": 0.351533820598757,
+          "window": 4000,
+          "peakTime": 3.83912861337716
+        }
+      ]
+    },
+    {
+      "drug": "sufentanil",
+      "patientId": "elderly-female-85",
+      "patient": {
+        "weight": 85,
+        "height": 175,
+        "age": 80,
+        "sex": "female"
+      },
+      "adjustToFFM": true,
+      "solve": "ke0FromTPeak",
+      "tPeak": 5.6,
+      "inputs": {
+        "p_coef_bolus": [0.0692617748842549, 0.00508016173726085, 0.000312778674085786],
+        "lambda": [0.213745316722483, 0.0106138169384262, 0.000922905191685863]
+      },
+      "ke0": 0.173164690686706,
+      "bracket": {
+        "lower": 0.001,
+        "upper": 1,
+        "peakAtLower": 231.028668493108,
+        "peakAtUpper": 2.03317335566256
+      },
+      "ke0BeforeSeparation": 0.173164690686706,
+      "resolveIdentical": true,
+      "ke0Exact": 0.173165403646599,
+      "ke0ExactRelativeDifference": 4.11723596361777e-06,
+      "e_coef_bolus": [-0.295552212863118, 0.00541187269921103, 0.000314454603427396, 0.289825885560479],
+      "roundTrip": {
+        "window": 4000,
+        "peakTime": 5.60000000000829,
+        "ceAtPeak": 0.0260225927337579,
+        "peakTimeMinusTPeak": 8.28581647738247e-12
+      },
+      "peakSamples": [
+        {
+          "ke0": 0.0865823453433532,
+          "window": 4000,
+          "peakTime": 7.9508533657303
+        },
+        {
+          "ke0": 0.138531752549365,
+          "window": 4000,
+          "peakTime": 6.28354524481985
+        },
+        {
+          "ke0": 0.164506456152371,
+          "window": 4000,
+          "peakTime": 5.75156557631455
+        },
+        {
+          "ke0": 0.173164690686706,
+          "window": 4000,
+          "peakTime": 5.60000000000829
+        },
+        {
+          "ke0": 0.181822925221042,
+          "window": 4000,
+          "peakTime": 5.45884610293346
+        },
+        {
+          "ke0": 0.216455863358383,
+          "window": 4000,
+          "peakTime": 4.9772365575793
+        },
+        {
+          "ke0": 0.346329381373413,
+          "window": 4000,
+          "peakTime": 3.8442851720753
+        }
+      ]
+    },
+    {
+      "drug": "sufentanil",
+      "patientId": "elderly-female-85",
+      "patient": {
+        "weight": 85,
+        "height": 175,
+        "age": 80,
+        "sex": "female"
+      },
+      "adjustToFFM": false,
+      "solve": "ke0FromTPeak",
+      "tPeak": 5.6,
+      "inputs": {
+        "p_coef_bolus": [0.0648784305446554, 0.00475865541963503, 0.000292983965779499],
+        "lambda": [0.210280154585689, 0.0104417495586779, 0.000907943384919355]
+      },
+      "ke0": 0.175766910299378,
+      "bracket": {
+        "lower": 0.001,
+        "upper": 1,
+        "peakAtLower": 232.911016204041,
+        "peakAtUpper": 2.04526229786324
+      },
+      "ke0BeforeSeparation": 0.175766910299378,
+      "resolveIdentical": true,
+      "ke0Exact": 0.175767623065557,
+      "ke0ExactRelativeDifference": 4.05517840378118e-06,
+      "e_coef_bolus": [-0.330408847899297, 0.00505920669631461, 0.000294505265249071, 0.325055135937733],
+      "roundTrip": {
+        "window": 4000,
+        "peakTime": 5.60000000000127,
+        "ceAtPeak": 0.0247641131638543,
+        "peakTimeMinusTPeak": 1.27364785384998e-12
+      },
+      "peakSamples": [
+        {
+          "ke0": 0.0878834551496892,
+          "window": 4000,
+          "peakTime": 7.95823339590205
+        },
+        {
+          "ke0": 0.140613528239503,
+          "window": 4000,
+          "peakTime": 6.28582832313316
+        },
+        {
+          "ke0": 0.16697856478441,
+          "window": 4000,
+          "peakTime": 5.75206909118668
+        },
+        {
+          "ke0": 0.175766910299378,
+          "window": 4000,
+          "peakTime": 5.60000000000127
+        },
+        {
+          "ke0": 0.184555255814347,
+          "window": 4000,
+          "peakTime": 5.45838062073092
+        },
+        {
+          "ke0": 0.219708637874223,
+          "window": 4000,
+          "peakTime": 4.97522597669068
+        },
+        {
+          "ke0": 0.351533820598757,
+          "window": 4000,
+          "peakTime": 3.83912861337716
+        }
+      ]
+    },
+    {
+      "drug": "sufentanil",
+      "patientId": "young-female-45",
+      "patient": {
+        "weight": 45,
+        "height": 160,
+        "age": 25,
+        "sex": "female"
+      },
+      "adjustToFFM": true,
+      "solve": "ke0FromTPeak",
+      "tPeak": 5.6,
+      "inputs": {
+        "p_coef_bolus": [0.108339860446042, 0.00794643242362672, 0.000489251076189777],
+        "lambda": [0.239039830241228, 0.011869850708668, 0.00103212132893565]
+      },
+      "ke0": 0.155936319001157,
+      "bracket": {
+        "lower": 0.001,
+        "upper": 1,
+        "peakAtLower": 218.521346955107,
+        "peakAtUpper": 1.95140030590369
+      },
+      "ke0BeforeSeparation": 0.155936319001157,
+      "resolveIdentical": true,
+      "ke0Exact": 0.155937048834946,
+      "ke0ExactRelativeDifference": 4.68033229042053e-06,
+      "e_coef_bolus": [-0.203290075075779, 0.00860115081613614, 0.000492510939244028, 0.194196413320398],
+      "roundTrip": {
+        "window": 4000,
+        "peakTime": 5.59999999983129,
+        "ceAtPeak": 0.0363291477380163,
+        "peakTimeMinusTPeak": -1.68708602643619e-10
+      },
+      "peakSamples": [
+        {
+          "ke0": 0.0779681595005787,
+          "window": 4000,
+          "peakTime": 7.90679358931261
+        },
+        {
+          "ke0": 0.124749055200926,
+          "window": 4000,
+          "peakTime": 6.26900640342254
+        },
+        {
+          "ke0": 0.148139503051099,
+          "window": 4000,
+          "peakTime": 5.74831466334381
+        },
+        {
+          "ke0": 0.155936319001157,
+          "window": 4000,
+          "peakTime": 5.59999999983129
+        },
+        {
+          "ke0": 0.163733134951215,
+          "window": 4000,
+          "peakTime": 5.46187231087826
+        },
+        {
+          "ke0": 0.194920398751447,
+          "window": 4000,
+          "peakTime": 4.9904462394428
+        },
+        {
+          "ke0": 0.311872638002315,
+          "window": 4000,
+          "peakTime": 3.87888833116599
+        }
+      ]
+    },
+    {
+      "drug": "sufentanil",
+      "patientId": "young-female-45",
+      "patient": {
+        "weight": 45,
+        "height": 160,
+        "age": 25,
+        "sex": "female"
+      },
+      "adjustToFFM": false,
+      "solve": "ke0FromTPeak",
+      "tPeak": 5.6,
+      "inputs": {
+        "p_coef_bolus": [0.0648784305446554, 0.00475865541963503, 0.000292983965779499],
+        "lambda": [0.210280154585689, 0.0104417495586779, 0.000907943384919355]
+      },
+      "ke0": 0.175766910299378,
+      "bracket": {
+        "lower": 0.001,
+        "upper": 1,
+        "peakAtLower": 232.911016204041,
+        "peakAtUpper": 2.04526229786324
+      },
+      "ke0BeforeSeparation": 0.175766910299378,
+      "resolveIdentical": true,
+      "ke0Exact": 0.175767623065557,
+      "ke0ExactRelativeDifference": 4.05517840378118e-06,
+      "e_coef_bolus": [-0.330408847899297, 0.00505920669631461, 0.000294505265249071, 0.325055135937733],
+      "roundTrip": {
+        "window": 4000,
+        "peakTime": 5.60000000000127,
+        "ceAtPeak": 0.0247641131638543,
+        "peakTimeMinusTPeak": 1.27364785384998e-12
+      },
+      "peakSamples": [
+        {
+          "ke0": 0.0878834551496892,
+          "window": 4000,
+          "peakTime": 7.95823339590205
+        },
+        {
+          "ke0": 0.140613528239503,
+          "window": 4000,
+          "peakTime": 6.28582832313316
+        },
+        {
+          "ke0": 0.16697856478441,
+          "window": 4000,
+          "peakTime": 5.75206909118668
+        },
+        {
+          "ke0": 0.175766910299378,
+          "window": 4000,
+          "peakTime": 5.60000000000127
+        },
+        {
+          "ke0": 0.184555255814347,
+          "window": 4000,
+          "peakTime": 5.45838062073092
+        },
+        {
+          "ke0": 0.219708637874223,
+          "window": 4000,
+          "peakTime": 4.97522597669068
+        },
+        {
+          "ke0": 0.351533820598757,
+          "window": 4000,
+          "peakTime": 3.83912861337716
+        }
+      ]
+    },
+    {
+      "drug": "sufentanil",
+      "patientId": "neonate-male-3.5",
+      "patient": {
+        "weight": 3.5,
+        "height": 50,
+        "age": 0,
+        "sex": "male"
+      },
+      "adjustToFFM": true,
+      "solve": "ke0FromTPeak",
+      "tPeak": 5.6,
+      "inputs": {
+        "p_coef_bolus": [1.20121169974656, 0.0881055925234422, 0.00542454194064375],
+        "lambda": [0.436192397757144, 0.0216597319216986, 0.00188338268476143]
+      },
+      "ke0": 0.0844652007584771,
+      "bracket": {
+        "lower": 0.001,
+        "upper": 1,
+        "peakAtLower": 163.446877183302,
+        "peakAtUpper": 1.54223658421093
+      },
+      "ke0BeforeSeparation": 0.0844652007584771,
+      "resolveIdentical": true,
+      "ke0Exact": 0.0844651617442341,
+      "ke0ExactRelativeDifference": -4.61897238939099e-07,
+      "e_coef_bolus": [-0.288463866992092, 0.118490582082546, 0.00554825547229125, 0.164425029437254],
+      "roundTrip": {
+        "window": 4000,
+        "peakTime": 5.59999999997542,
+        "ceAtPeak": 0.187827938446867,
+        "peakTimeMinusTPeak": -2.4580337765201e-11
+      },
+      "peakSamples": [
+        {
+          "ke0": 0.0422326003792386,
+          "window": 4000,
+          "peakTime": 8.20875683296644
+        },
+        {
+          "ke0": 0.0675721606067817,
+          "window": 4000,
+          "peakTime": 6.27558888433343
+        },
+        {
+          "ke0": 0.0802419407205533,
+          "window": 4000,
+          "peakTime": 5.74630942242646
+        },
+        {
+          "ke0": 0.0844652007584771,
+          "window": 4000,
+          "peakTime": 5.59999999997542
+        },
+        {
+          "ke0": 0.088688460796401,
+          "window": 4000,
+          "peakTime": 5.46515849566523
+        },
+        {
+          "ke0": 0.105581500948096,
+          "window": 4000,
+          "peakTime": 5.01392193896603
+        },
+        {
+          "ke0": 0.168930401516954,
+          "window": 4000,
+          "peakTime": 3.98320624729811
+        }
+      ]
+    },
+    {
+      "drug": "sufentanil",
+      "patientId": "neonate-male-3.5",
+      "patient": {
+        "weight": 3.5,
+        "height": 50,
+        "age": 0,
+        "sex": "male"
+      },
+      "adjustToFFM": false,
+      "solve": "ke0FromTPeak",
+      "tPeak": 5.6,
+      "inputs": {
+        "p_coef_bolus": [0.0648784305446554, 0.00475865541963503, 0.000292983965779499],
+        "lambda": [0.210280154585689, 0.0104417495586779, 0.000907943384919355]
+      },
+      "ke0": 0.175766910299378,
+      "bracket": {
+        "lower": 0.001,
+        "upper": 1,
+        "peakAtLower": 232.911016204041,
+        "peakAtUpper": 2.04526229786324
+      },
+      "ke0BeforeSeparation": 0.175766910299378,
+      "resolveIdentical": true,
+      "ke0Exact": 0.175767623065557,
+      "ke0ExactRelativeDifference": 4.05517840378118e-06,
+      "e_coef_bolus": [-0.330408847899297, 0.00505920669631461, 0.000294505265249071, 0.325055135937733],
+      "roundTrip": {
+        "window": 4000,
+        "peakTime": 5.60000000000127,
+        "ceAtPeak": 0.0247641131638543,
+        "peakTimeMinusTPeak": 1.27364785384998e-12
+      },
+      "peakSamples": [
+        {
+          "ke0": 0.0878834551496892,
+          "window": 4000,
+          "peakTime": 7.95823339590205
+        },
+        {
+          "ke0": 0.140613528239503,
+          "window": 4000,
+          "peakTime": 6.28582832313316
+        },
+        {
+          "ke0": 0.16697856478441,
+          "window": 4000,
+          "peakTime": 5.75206909118668
+        },
+        {
+          "ke0": 0.175766910299378,
+          "window": 4000,
+          "peakTime": 5.60000000000127
+        },
+        {
+          "ke0": 0.184555255814347,
+          "window": 4000,
+          "peakTime": 5.45838062073092
+        },
+        {
+          "ke0": 0.219708637874223,
+          "window": 4000,
+          "peakTime": 4.97522597669068
+        },
+        {
+          "ke0": 0.351533820598757,
+          "window": 4000,
+          "peakTime": 3.83912861337716
+        }
+      ]
+    },
+    {
+      "drug": "remimazolam",
+      "patientId": "adult-male-70",
+      "patient": {
+        "weight": 70,
+        "height": 170,
+        "age": 50,
+        "sex": "male"
+      },
+      "adjustToFFM": true,
+      "solve": "tPeakFromKe0",
+      "tPeak": 2.38023102514917,
+      "inputs": {
+        "p_coef_bolus": [0.209837240198565, 0.0190835014298888, 0.00309768036101488],
+        "lambda": [0.737033454246757, 0.0562853257684653, 0.0115111651482538]
+      },
+      "ke0": 0.298268855365719,
+      "modelKe0": 0.298268855365719,
+      "tPeakResolved": 2.38023102514917,
+      "resolveIdentical": true,
+      "e_coef_bolus": [-0.142645768612014, 0.0235223204543571, 0.00322202893623566, 0.115901419221421],
+      "roundTrip": {
+        "window": 1737.44358128976,
+        "peakTime": 2.38023102514917,
+        "ceAtPeak": 0.056011573746703,
+        "peakTimeMinusTPeak": 0
+      },
+      "peakSamples": [
+        {
+          "ke0": 0.14913442768286,
+          "window": 1737.44358128976,
+          "peakTime": 3.40647153383408
+        },
+        {
+          "ke0": 0.238615084292575,
+          "window": 1737.44358128976,
+          "peakTime": 2.66765142631025
+        },
+        {
+          "ke0": 0.283355412597433,
+          "window": 1737.44358128976,
+          "peakTime": 2.4434408729253
+        },
+        {
+          "ke0": 0.298268855365719,
+          "window": 1737.44358128976,
+          "peakTime": 2.38023102514917
+        },
+        {
+          "ke0": 0.313182298134005,
+          "window": 1737.44358128976,
+          "peakTime": 2.32160993385231
+        },
+        {
+          "ke0": 0.372836069207149,
+          "window": 1737.44358128976,
+          "peakTime": 2.12291852799522
+        },
+        {
+          "ke0": 0.596537710731439,
+          "window": 1737.44358128976,
+          "peakTime": 1.66032875583082
+        }
+      ]
+    },
+    {
+      "drug": "remimazolam",
+      "patientId": "adult-male-70",
+      "patient": {
+        "weight": 70,
+        "height": 170,
+        "age": 50,
+        "sex": "male"
+      },
+      "adjustToFFM": false,
+      "solve": "tPeakFromKe0",
+      "tPeak": 2.38023085021957,
+      "inputs": {
+        "p_coef_bolus": [0.209837366358117, 0.0190835129033815, 0.00309768222341997],
+        "lambda": [0.737033565027605, 0.0562853342285098, 0.0115111668784559]
+      },
+      "ke0": 0.298268855365719,
+      "modelKe0": 0.298268855365719,
+      "tPeakResolved": 2.38023085021957,
+      "resolveIdentical": true,
+      "e_coef_bolus": [-0.142645818358599, 0.0235223354189521, 0.00322203089284299, 0.115901452046804],
+      "roundTrip": {
+        "window": 1737.44332014087,
+        "peakTime": 2.38023085021957,
+        "ceAtPeak": 0.0560116023513421,
+        "peakTimeMinusTPeak": 0
+      },
+      "peakSamples": [
+        {
+          "ke0": 0.14913442768286,
+          "window": 1737.44332014087,
+          "peakTime": 3.40647129606583
+        },
+        {
+          "ke0": 0.238615084292575,
+          "window": 1737.44332014087,
+          "peakTime": 2.6676512304229
+        },
+        {
+          "ke0": 0.283355412597433,
+          "window": 1737.44332014087,
+          "peakTime": 2.44344069327108
+        },
+        {
+          "ke0": 0.298268855365719,
+          "window": 1737.44332014087,
+          "peakTime": 2.38023085021957
+        },
+        {
+          "ke0": 0.313182298134005,
+          "window": 1737.44332014087,
+          "peakTime": 2.32160976343229
+        },
+        {
+          "ke0": 0.372836069207149,
+          "window": 1737.44332014087,
+          "peakTime": 2.12291837323411
+        },
+        {
+          "ke0": 0.596537710731439,
+          "window": 1737.44332014087,
+          "peakTime": 1.66032863917267
+        }
+      ]
+    },
+    {
+      "drug": "remimazolam",
+      "patientId": "adult-female-60",
+      "patient": {
+        "weight": 60,
+        "height": 165,
+        "age": 35,
+        "sex": "female"
+      },
+      "adjustToFFM": true,
+      "solve": "tPeakFromKe0",
+      "tPeak": 2.16634666582623,
+      "inputs": {
+        "p_coef_bolus": [0.290378188613315, 0.0229609380355972, 0.00324354358217181],
+        "lambda": [0.852532475498973, 0.0657406151342138, 0.0121119744394976]
+      },
+      "ke0": 0.298268855365719,
+      "modelKe0": 0.298268855365719,
+      "tPeakResolved": 2.16634666582623,
+      "resolveIdentical": true,
+      "e_coef_bolus": [-0.156262772433164, 0.0294524772525797, 0.00338083092201666, 0.123429464258568],
+      "roundTrip": {
+        "window": 1651.25843849036,
+        "peakTime": 2.16634666582623,
+        "ceAtPeak": 0.068873290447948,
+        "peakTimeMinusTPeak": 0
+      },
+      "peakSamples": [
+        {
+          "ke0": 0.14913442768286,
+          "window": 1651.25843849036,
+          "peakTime": 3.06406843947069
+        },
+        {
+          "ke0": 0.238615084292575,
+          "window": 1651.25843849036,
+          "peakTime": 2.4191972210372
+        },
+        {
+          "ke0": 0.283355412597433,
+          "window": 1651.25843849036,
+          "peakTime": 2.22205880545063
+        },
+        {
+          "ke0": 0.298268855365719,
+          "window": 1651.25843849036,
+          "peakTime": 2.16634666582623
+        },
+        {
+          "ke0": 0.313182298134005,
+          "window": 1651.25843849036,
+          "peakTime": 2.11460757610603
+        },
+        {
+          "ke0": 0.372836069207149,
+          "window": 1651.25843849036,
+          "peakTime": 1.93893547589608
+        },
+        {
+          "ke0": 0.596537710731439,
+          "window": 1651.25843849036,
+          "peakTime": 1.52725114113677
+        }
+      ]
+    },
+    {
+      "drug": "remimazolam",
+      "patientId": "adult-female-60",
+      "patient": {
+        "weight": 60,
+        "height": 165,
+        "age": 35,
+        "sex": "female"
+      },
+      "adjustToFFM": false,
+      "solve": "tPeakFromKe0",
+      "tPeak": 2.20957199828307,
+      "inputs": {
+        "p_coef_bolus": [0.248282650740358, 0.0196323373535287, 0.00277333363851889],
+        "lambda": [0.819797381769948, 0.0632163415609839, 0.0116469052134973]
+      },
+      "ke0": 0.298268855365719,
+      "modelKe0": 0.298268855365719,
+      "tPeakResolved": 2.20957199828307,
+      "resolveIdentical": true,
+      "e_coef_bolus": [-0.141996033379187, 0.0249123682865829, 0.00288602826639397, 0.11419763682621],
+      "roundTrip": {
+        "window": 1717.19436480195,
+        "peakTime": 2.20957199828307,
+        "ceAtPeak": 0.0603511953806591,
+        "peakTimeMinusTPeak": 0
+      },
+      "peakSamples": [
+        {
+          "ke0": 0.14913442768286,
+          "window": 1717.19436480195,
+          "peakTime": 3.1227742632859
+        },
+        {
+          "ke0": 0.238615084292575,
+          "window": 1717.19436480195,
+          "peakTime": 2.46748638228031
+        },
+        {
+          "ke0": 0.283355412597433,
+          "window": 1717.19436480195,
+          "peakTime": 2.26643503522329
+        },
+        {
+          "ke0": 0.298268855365719,
+          "window": 1717.19436480195,
+          "peakTime": 2.20957199828307
+        },
+        {
+          "ke0": 0.313182298134005,
+          "window": 1717.19436480195,
+          "peakTime": 2.15676316945759
+        },
+        {
+          "ke0": 0.372836069207149,
+          "window": 1717.19436480195,
+          "peakTime": 1.97724118101897
+        },
+        {
+          "ke0": 0.596537710731439,
+          "window": 1717.19436480195,
+          "peakTime": 1.55630217042371
+        }
+      ]
+    },
+    {
+      "drug": "remimazolam",
+      "patientId": "obese-male-100",
+      "patient": {
+        "weight": 100,
+        "height": 180,
+        "age": 60,
+        "sex": "male"
+      },
+      "adjustToFFM": true,
+      "solve": "tPeakFromKe0",
+      "tPeak": 2.44187197628061,
+      "inputs": {
+        "p_coef_bolus": [0.164762166383388, 0.0147917310798893, 0.00242234404085554],
+        "lambda": [0.697255208094487, 0.053360391102748, 0.0105032410800293]
+      },
+      "ke0": 0.298268855365719,
+      "modelKe0": 0.298268855365719,
+      "tPeakResolved": 2.44187197628061,
+      "resolveIdentical": true,
+      "e_coef_bolus": [-0.123170686011301, 0.0180145374368883, 0.00251075788245726, 0.102645390691956],
+      "roundTrip": {
+        "window": 1904.17413516555,
+        "peakTime": 2.44187197628061,
+        "ceAtPeak": 0.0453664801005818,
+        "peakTimeMinusTPeak": 0
+      },
+      "peakSamples": [
+        {
+          "ke0": 0.14913442768286,
+          "window": 1904.17413516555,
+          "peakTime": 3.48697118798117
+        },
+        {
+          "ke0": 0.238615084292575,
+          "window": 1904.17413516555,
+          "peakTime": 2.73606767355397
+        },
+        {
+          "ke0": 0.283355412597433,
+          "window": 1904.17413516555,
+          "peakTime": 2.50663767112371
+        },
+        {
+          "ke0": 0.298268855365719,
+          "window": 1904.17413516555,
+          "peakTime": 2.44187197628061
+        },
+        {
+          "ke0": 0.313182298134005,
+          "window": 1904.17413516555,
+          "peakTime": 2.38172186730628
+        },
+        {
+          "ke0": 0.372836069207149,
+          "window": 1904.17413516555,
+          "peakTime": 2.17778338433996
+        },
+        {
+          "ke0": 0.596537710731439,
+          "window": 1904.17413516555,
+          "peakTime": 1.70206173031766
+        }
+      ]
+    },
+    {
+      "drug": "remimazolam",
+      "patientId": "obese-male-100",
+      "patient": {
+        "weight": 100,
+        "height": 180,
+        "age": 60,
+        "sex": "male"
+      },
+      "adjustToFFM": false,
+      "solve": "tPeakFromKe0",
+      "tPeak": 2.47608258060948,
+      "inputs": {
+        "p_coef_bolus": [0.147049506907093, 0.0132015547582612, 0.00216193137408915],
+        "lambda": [0.677709052239348, 0.05186453921254, 0.0102088037136948]
+      },
+      "ke0": 0.298268855365719,
+      "modelKe0": 0.298268855365719,
+      "tPeakResolved": 2.47608258060948,
+      "resolveIdentical": true,
+      "e_coef_bolus": [-0.115592097170136, 0.015980290801183, 0.0022385498878816, 0.0973732564810713],
+      "roundTrip": {
+        "window": 1959.09340221428,
+        "peakTime": 2.47608258060948,
+        "ceAtPeak": 0.0411780459501301,
+        "peakTimeMinusTPeak": 0
+      },
+      "peakSamples": [
+        {
+          "ke0": 0.14913442768286,
+          "window": 1959.09340221428,
+          "peakTime": 3.5341721183634
+        },
+        {
+          "ke0": 0.238615084292575,
+          "window": 1959.09340221428,
+          "peakTime": 2.77450666192824
+        },
+        {
+          "ke0": 0.283355412597433,
+          "window": 1959.09340221428,
+          "peakTime": 2.54178465033702
+        },
+        {
+          "ke0": 0.298268855365719,
+          "window": 1959.09340221428,
+          "peakTime": 2.47608258060948
+        },
+        {
+          "ke0": 0.313182298134005,
+          "window": 1959.09340221428,
+          "peakTime": 2.41502832379703
+        },
+        {
+          "ke0": 0.372836069207149,
+          "window": 1959.09340221428,
+          "peakTime": 2.20796172501345
+        },
+        {
+          "ke0": 0.596537710731439,
+          "window": 1959.09340221428,
+          "peakTime": 1.72466850066739
+        }
+      ]
+    },
+    {
+      "drug": "remimazolam",
+      "patientId": "obese-female-120",
+      "patient": {
+        "weight": 120,
+        "height": 175,
+        "age": 45,
+        "sex": "female"
+      },
+      "adjustToFFM": true,
+      "solve": "tPeakFromKe0",
+      "tPeak": 2.27732449418165,
+      "inputs": {
+        "p_coef_bolus": [0.188927764644448, 0.014729799025819, 0.00210884685373122],
+        "lambda": [0.76983568291244, 0.0594260257058012, 0.0105466295812779]
+      },
+      "ke0": 0.298268855365719,
+      "modelKe0": 0.298268855365719,
+      "tPeakResolved": 2.27732449418165,
+      "resolveIdentical": true,
+      "e_coef_bolus": [-0.119497947725597, 0.0183946920301264, 0.00218614789138762, 0.0989171078040828],
+      "roundTrip": {
+        "window": 1896.34042286868,
+        "peakTime": 2.27732449418165,
+        "ceAtPeak": 0.0476511016002915,
+        "peakTimeMinusTPeak": 0
+      },
+      "peakSamples": [
+        {
+          "ke0": 0.14913442768286,
+          "window": 1896.34042286868,
+          "peakTime": 3.21244112245267
+        },
+        {
+          "ke0": 0.238615084292575,
+          "window": 1896.34042286868,
+          "peakTime": 2.5428379140471
+        },
+        {
+          "ke0": 0.283355412597433,
+          "window": 1896.34042286868,
+          "peakTime": 2.33591812677067
+        },
+        {
+          "ke0": 0.298268855365719,
+          "window": 1896.34042286868,
+          "peakTime": 2.27732449418165
+        },
+        {
+          "ke0": 0.313182298134005,
+          "window": 1896.34042286868,
+          "peakTime": 2.22285859439497
+        },
+        {
+          "ke0": 0.372836069207149,
+          "window": 1896.34042286868,
+          "peakTime": 2.037571391071
+        },
+        {
+          "ke0": 0.596537710731439,
+          "window": 1896.34042286868,
+          "peakTime": 1.60226434765331
+        }
+      ]
+    },
+    {
+      "drug": "remimazolam",
+      "patientId": "obese-female-120",
+      "patient": {
+        "weight": 120,
+        "height": 175,
+        "age": 45,
+        "sex": "female"
+      },
+      "adjustToFFM": false,
+      "solve": "tPeakFromKe0",
+      "tPeak": 2.40052749002994,
+      "inputs": {
+        "p_coef_bolus": [0.124268434799508, 0.00968861868076746, 0.00138710738592739],
+        "lambda": [0.693288981378772, 0.0535171462474929, 0.00949795163004266]
+      },
+      "ke0": 0.298268855365719,
+      "modelKe0": 0.298268855365719,
+      "tPeakResolved": 2.40052749002994,
+      "resolveIdentical": true,
+      "e_coef_bolus": [-0.0938316844254005, 0.0118071216515654, 0.00143273067652481, 0.0805918320973104],
+      "roundTrip": {
+        "window": 2105.71718819231,
+        "peakTime": 2.40052749002994,
+        "ceAtPeak": 0.0334042434990776,
+        "peakTimeMinusTPeak": 0
+      },
+      "peakSamples": [
+        {
+          "ke0": 0.14913442768286,
+          "window": 2105.71718819231,
+          "peakTime": 3.38389031420907
+        },
+        {
+          "ke0": 0.238615084292575,
+          "window": 2105.71718819231,
+          "peakTime": 2.68134919254173
+        },
+        {
+          "ke0": 0.283355412597433,
+          "window": 2105.71718819231,
+          "peakTime": 2.46259876050208
+        },
+        {
+          "ke0": 0.298268855365719,
+          "window": 2105.71718819231,
+          "peakTime": 2.40052749002994
+        },
+        {
+          "ke0": 0.313182298134005,
+          "window": 2105.71718819231,
+          "peakTime": 2.34280124216549
+        },
+        {
+          "ke0": 0.372836069207149,
+          "window": 2105.71718819231,
+          "peakTime": 2.14629422954762
+        },
+        {
+          "ke0": 0.596537710731439,
+          "window": 2105.71718819231,
+          "peakTime": 1.6839793810195
+        }
+      ]
+    },
+    {
+      "drug": "remimazolam",
+      "patientId": "child-male-20",
+      "patient": {
+        "weight": 20,
+        "height": 110,
+        "age": 5,
+        "sex": "male"
+      },
+      "adjustToFFM": true,
+      "solve": "tPeakFromKe0",
+      "tPeak": 2.08500772573992,
+      "inputs": {
+        "p_coef_bolus": [0.714955581423402, 0.0684433491834029, 0.0106794326637326],
+        "lambda": [0.982025949825556, 0.0742655011133758, 0.017888031577553]
+      },
+      "ke0": 0.298268855365719,
+      "modelKe0": 0.298268855365719,
+      "tPeakResolved": 2.08500772573992,
+      "resolveIdentical": true,
+      "e_coef_bolus": [-0.311878274662664, 0.0911348827184637, 0.0113607703748435, 0.209382621569357],
+      "roundTrip": {
+        "window": 1118.06600481951,
+        "peakTime": 2.08500772573992,
+        "ceAtPeak": 0.161180686984296,
+        "peakTimeMinusTPeak": 0
+      },
+      "peakSamples": [
+        {
+          "ke0": 0.14913442768286,
+          "window": 1118.06600481951,
+          "peakTime": 3.04089307973809
+        },
+        {
+          "ke0": 0.238615084292575,
+          "window": 1118.06600481951,
+          "peakTime": 2.34295141891985
+        },
+        {
+          "ke0": 0.283355412597433,
+          "window": 1118.06600481951,
+          "peakTime": 2.14124756041372
+        },
+        {
+          "ke0": 0.298268855365719,
+          "window": 1118.06600481951,
+          "peakTime": 2.08500772573992
+        },
+        {
+          "ke0": 0.313182298134005,
+          "window": 1118.06600481951,
+          "peakTime": 2.03300778395241
+        },
+        {
+          "ke0": 0.372836069207149,
+          "window": 1118.06600481951,
+          "peakTime": 1.85814904162965
+        },
+        {
+          "ke0": 0.596537710731439,
+          "window": 1118.06600481951,
+          "peakTime": 1.4566161015491
+        }
+      ]
+    },
+    {
+      "drug": "remimazolam",
+      "patientId": "child-male-20",
+      "patient": {
+        "weight": 20,
+        "height": 110,
+        "age": 5,
+        "sex": "male"
+      },
+      "adjustToFFM": false,
+      "solve": "tPeakFromKe0",
+      "tPeak": 2.0793920893032,
+      "inputs": {
+        "p_coef_bolus": [0.731149979902357, 0.0699936537040058, 0.0109213315908529],
+        "lambda": [0.987540275896873, 0.0746825208357785, 0.0179884774353338]
+      },
+      "ke0": 0.298268855365719,
+      "modelKe0": 0.298268855365719,
+      "tPeakResolved": 2.0793920893032,
+      "resolveIdentical": true,
+      "e_coef_bolus": [-0.316390990704493, 0.0933730007115559, 0.0116222658779282, 0.211395724115009],
+      "roundTrip": {
+        "window": 1111.82283614038,
+        "peakTime": 2.0793920893032,
+        "ceAtPeak": 0.164243542295883,
+        "peakTimeMinusTPeak": 0
+      },
+      "peakSamples": [
+        {
+          "ke0": 0.14913442768286,
+          "window": 1111.82283614038,
+          "peakTime": 3.03400293911929
+        },
+        {
+          "ke0": 0.238615084292575,
+          "window": 1111.82283614038,
+          "peakTime": 2.33677435875462
+        },
+        {
+          "ke0": 0.283355412597433,
+          "window": 1111.82283614038,
+          "peakTime": 2.13553826127373
+        },
+        {
+          "ke0": 0.298268855365719,
+          "window": 1111.82283614038,
+          "peakTime": 2.0793920893032
+        },
+        {
+          "ke0": 0.313182298134005,
+          "window": 1111.82283614038,
+          "peakTime": 2.02751830589692
+        },
+        {
+          "ke0": 0.372836069207149,
+          "window": 1111.82283614038,
+          "peakTime": 1.85311647094561
+        },
+        {
+          "ke0": 0.596537710731439,
+          "window": 1111.82283614038,
+          "peakTime": 1.45274920757951
+        }
+      ]
+    },
+    {
+      "drug": "remimazolam",
+      "patientId": "elderly-female-85",
+      "patient": {
+        "weight": 85,
+        "height": 175,
+        "age": 80,
+        "sex": "female"
+      },
+      "adjustToFFM": true,
+      "solve": "tPeakFromKe0",
+      "tPeak": 2.1868925109194,
+      "inputs": {
+        "p_coef_bolus": [0.228311944316412, 0.0168550572654216, 0.00252729742677423],
+        "lambda": [0.824499004527962, 0.0638340923045234, 0.00988264465756822]
+      },
+      "ke0": 0.298268855365719,
+      "modelKe0": 0.298268855365719,
+      "tPeakResolved": 2.1868925109194,
+      "resolveIdentical": true,
+      "e_coef_bolus": [-0.129407907178999, 0.0214445100719497, 0.00261390483546921, 0.10534949227158],
+      "roundTrip": {
+        "window": 2023.74978490032,
+        "peakTime": 2.1868925109194,
+        "ceAtPeak": 0.0547553990862128,
+        "peakTimeMinusTPeak": 0
+      },
+      "peakSamples": [
+        {
+          "ke0": 0.14913442768286,
+          "window": 2023.74978490032,
+          "peakTime": 3.07590196784087
+        },
+        {
+          "ke0": 0.238615084292575,
+          "window": 2023.74978490032,
+          "peakTime": 2.43924395951248
+        },
+        {
+          "ke0": 0.283355412597433,
+          "window": 2023.74978490032,
+          "peakTime": 2.24259576924163
+        },
+        {
+          "ke0": 0.298268855365719,
+          "window": 2023.74978490032,
+          "peakTime": 2.1868925109194
+        },
+        {
+          "ke0": 0.313182298134005,
+          "window": 2023.74978490032,
+          "peakTime": 2.13510386109607
+        },
+        {
+          "ke0": 0.372836069207149,
+          "window": 2023.74978490032,
+          "peakTime": 1.95889917743003
+        },
+        {
+          "ke0": 0.596537710731439,
+          "window": 2023.74978490032,
+          "peakTime": 1.54437599105175
+        }
+      ]
+    },
+    {
+      "drug": "remimazolam",
+      "patientId": "elderly-female-85",
+      "patient": {
+        "weight": 85,
+        "height": 175,
+        "age": 80,
+        "sex": "female"
+      },
+      "adjustToFFM": false,
+      "solve": "tPeakFromKe0",
+      "tPeak": 2.26026377502595,
+      "inputs": {
+        "p_coef_bolus": [0.176122347641943, 0.0130021767547624, 0.0019495850614632],
+        "lambda": [0.772701212885865, 0.0598238206186948, 0.00926178378807757]
+      },
+      "ke0": 0.298268855365719,
+      "modelKe0": 0.298268855365719,
+      "tPeakResolved": 2.26026377502595,
+      "resolveIdentical": true,
+      "e_coef_bolus": [-0.110725607566206, 0.0162643117396855, 0.00201206323965161, 0.0924492325868688],
+      "roundTrip": {
+        "window": 2159.41123844258,
+        "peakTime": 2.26026377502595,
+        "ceAtPeak": 0.0439795342527869,
+        "peakTimeMinusTPeak": 0
+      },
+      "peakSamples": [
+        {
+          "ke0": 0.14913442768286,
+          "window": 2159.41123844258,
+          "peakTime": 3.17701917777329
+        },
+        {
+          "ke0": 0.238615084292575,
+          "window": 2159.41123844258,
+          "peakTime": 2.52150249484074
+        },
+        {
+          "ke0": 0.283355412597433,
+          "window": 2159.41123844258,
+          "peakTime": 2.31797362429898
+        },
+        {
+          "ke0": 0.298268855365719,
+          "window": 2159.41123844258,
+          "peakTime": 2.26026377502595
+        },
+        {
+          "ke0": 0.313182298134005,
+          "window": 2159.41123844258,
+          "peakTime": 2.20657011353776
+        },
+        {
+          "ke0": 0.372836069207149,
+          "window": 2159.41123844258,
+          "peakTime": 2.02380454352781
+        },
+        {
+          "ke0": 0.596537710731439,
+          "window": 2159.41123844258,
+          "peakTime": 1.59337117750403
+        }
+      ]
+    },
+    {
+      "drug": "remimazolam",
+      "patientId": "young-female-45",
+      "patient": {
+        "weight": 45,
+        "height": 160,
+        "age": 25,
+        "sex": "female"
+      },
+      "adjustToFFM": true,
+      "solve": "tPeakFromKe0",
+      "tPeak": 2.12087858558655,
+      "inputs": {
+        "p_coef_bolus": [0.355025788069003, 0.0284539975083307, 0.00396575466066388],
+        "lambda": [0.891860132232482, 0.0686963491992368, 0.013129815108069]
+      },
+      "ke0": 0.298268855365719,
+      "modelKe0": 0.298268855365719,
+      "tPeakResolved": 2.12087858558655,
+      "resolveIdentical": true,
+      "e_coef_bolus": [-0.178394022216103, 0.0369684567595138, 0.0041483660119942, 0.137277199444595],
+      "roundTrip": {
+        "window": 1523.25069586919,
+        "peakTime": 2.12087858558655,
+        "ceAtPeak": 0.0820049730234749,
+        "peakTimeMinusTPeak": 0
+      },
+      "peakSamples": [
+        {
+          "ke0": 0.14913442768286,
+          "window": 1523.25069586919,
+          "peakTime": 3.00634784788514
+        },
+        {
+          "ke0": 0.238615084292575,
+          "window": 1523.25069586919,
+          "peakTime": 2.36906625198008
+        },
+        {
+          "ke0": 0.283355412597433,
+          "window": 1523.25069586919,
+          "peakTime": 2.17549410494252
+        },
+        {
+          "ke0": 0.298268855365719,
+          "window": 1523.25069586919,
+          "peakTime": 2.12087858558655
+        },
+        {
+          "ke0": 0.313182298134005,
+          "window": 1523.25069586919,
+          "peakTime": 2.07016820154044
+        },
+        {
+          "ke0": 0.372836069207149,
+          "window": 1523.25069586919,
+          "peakTime": 1.89816407689908
+        },
+        {
+          "ke0": 0.596537710731439,
+          "window": 1523.25069586919,
+          "peakTime": 1.49587313149629
+        }
+      ]
+    },
+    {
+      "drug": "remimazolam",
+      "patientId": "young-female-45",
+      "patient": {
+        "weight": 45,
+        "height": 160,
+        "age": 25,
+        "sex": "female"
+      },
+      "adjustToFFM": false,
+      "solve": "tPeakFromKe0",
+      "tPeak": 2.13994180578461,
+      "inputs": {
+        "p_coef_bolus": [0.33071773884261, 0.0265057977004181, 0.00369422576684566],
+        "lambda": [0.876185674127111, 0.0674890096079712, 0.0128990583678533]
+      },
+      "ke0": 0.298268855365719,
+      "modelKe0": 0.298268855365719,
+      "tPeakResolved": 2.13994180578461,
+      "resolveIdentical": true,
+      "e_coef_bolus": [-0.170686850099186, 0.0342571246405887, 0.00386120921881527, 0.132568516239782],
+      "roundTrip": {
+        "window": 1550.50077530028,
+        "peakTime": 2.13994180578461,
+        "ceAtPeak": 0.0772531948754621,
+        "peakTimeMinusTPeak": 0
+      },
+      "peakSamples": [
+        {
+          "ke0": 0.14913442768286,
+          "window": 1550.50077530028,
+          "peakTime": 3.03188073308217
+        },
+        {
+          "ke0": 0.238615084292575,
+          "window": 1550.50077530028,
+          "peakTime": 2.39029998663373
+        },
+        {
+          "ke0": 0.283355412597433,
+          "window": 1550.50077530028,
+          "peakTime": 2.19505139130551
+        },
+        {
+          "ke0": 0.298268855365719,
+          "window": 1550.50077530028,
+          "peakTime": 2.13994180578461
+        },
+        {
+          "ke0": 0.313182298134005,
+          "window": 1550.50077530028,
+          "peakTime": 2.0887417790477
+        },
+        {
+          "ke0": 0.372836069207149,
+          "window": 1550.50077530028,
+          "peakTime": 1.9151003546687
+        },
+        {
+          "ke0": 0.596537710731439,
+          "window": 1550.50077530028,
+          "peakTime": 1.50875029272434
+        }
+      ]
+    },
+    {
+      "drug": "remimazolam",
+      "patientId": "neonate-male-3.5",
+      "patient": {
+        "weight": 3.5,
+        "height": 50,
+        "age": 0,
+        "sex": "male"
+      },
+      "adjustToFFM": true,
+      "solve": "tPeakFromKe0",
+      "tPeak": 1.71286078073123,
+      "inputs": {
+        "p_coef_bolus": [3.86601513019712, 0.371973880105748, 0.0577901612080931],
+        "lambda": [1.49466648305124, 0.112910714079051, 0.0276723146803634]
+      },
+      "ke0": 0.298268855365719,
+      "modelKe0": 0.298268855365719,
+      "tPeakResolved": 1.71286078073123,
+      "resolveIdentical": true,
+      "e_coef_bolus": [-0.963819955027149, 0.598561372459483, 0.0637000206701872, 0.301558561897479],
+      "roundTrip": {
+        "window": 722.744021633733,
+        "peakTime": 1.71286078073123,
+        "ceAtPeak": 0.660483372134465,
+        "peakTimeMinusTPeak": 0
+      },
+      "peakSamples": [
+        {
+          "ke0": 0.14913442768286,
+          "window": 722.744021633733,
+          "peakTime": 2.65424467658205
+        },
+        {
+          "ke0": 0.238615084292575,
+          "window": 722.744021633733,
+          "peakTime": 1.94268529819887
+        },
+        {
+          "ke0": 0.283355412597433,
+          "window": 722.744021633733,
+          "peakTime": 1.76197500490018
+        },
+        {
+          "ke0": 0.298268855365719,
+          "window": 722.744021633733,
+          "peakTime": 1.71286078073123
+        },
+        {
+          "ke0": 0.313182298134005,
+          "window": 722.744021633733,
+          "peakTime": 1.66792962110532
+        },
+        {
+          "ke0": 0.372836069207149,
+          "window": 722.744021633733,
+          "peakTime": 1.51957417618996
+        },
+        {
+          "ke0": 0.596537710731439,
+          "window": 722.744021633733,
+          "peakTime": 1.19059560172053
+        }
+      ]
+    },
+    {
+      "drug": "remimazolam",
+      "patientId": "neonate-male-3.5",
+      "patient": {
+        "weight": 3.5,
+        "height": 50,
+        "age": 0,
+        "sex": "male"
+      },
+      "adjustToFFM": false,
+      "solve": "tPeakFromKe0",
+      "tPeak": 1.69803845987739,
+      "inputs": {
+        "p_coef_bolus": [4.1761330523504, 0.401812295866885, 0.0624258814810932],
+        "lambda": [1.52377902175527, 0.115109945527004, 0.0282113053791554]
+      },
+      "ke0": 0.298268855365719,
+      "modelKe0": 0.298268855365719,
+      "tPeakResolved": 1.69803845987739,
+      "resolveIdentical": true,
+      "e_coef_bolus": [-1.01640154405995, 0.654339413057341, 0.0689471418795293, 0.293114989123077],
+      "roundTrip": {
+        "window": 708.935645876829,
+        "peakTime": 1.69803845987739,
+        "ceAtPeak": 0.704077144887874,
+        "peakTimeMinusTPeak": 0
+      },
+      "peakSamples": [
+        {
+          "ke0": 0.14913442768286,
+          "window": 708.935645876829,
+          "peakTime": 2.6436109986207
+        },
+        {
+          "ke0": 0.238615084292575,
+          "window": 708.935645876829,
+          "peakTime": 1.92724516289295
+        },
+        {
+          "ke0": 0.283355412597433,
+          "window": 708.935645876829,
+          "peakTime": 1.7469337716695
+        },
+        {
+          "ke0": 0.298268855365719,
+          "window": 708.935645876829,
+          "peakTime": 1.69803845987739
+        },
+        {
+          "ke0": 0.313182298134005,
+          "window": 708.935645876829,
+          "peakTime": 1.65331442954423
+        },
+        {
+          "ke0": 0.372836069207149,
+          "window": 708.935645876829,
+          "peakTime": 1.50580230075644
+        },
+        {
+          "ke0": 0.596537710731439,
+          "window": 708.935645876829,
+          "peakTime": 1.17952245208581
         }
       ]
     }

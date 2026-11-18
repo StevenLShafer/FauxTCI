@@ -39,6 +39,7 @@ import { makeTransport } from "../js/transport.js";
 import { formatRfc3339 } from "../js/tci.js";
 
 const closedLoop = JSON.parse(await readFile(new URL("./fixtures/closed-loop.json", import.meta.url), "utf8"));
+const manifest = JSON.parse(await readFile(new URL("./fixtures/manifest.json", import.meta.url), "utf8"));
 const START = Date.parse(closedLoop.start);
 
 const TOL_RATE = 1e-8; // rate.value, fallback.rate (relative)
@@ -78,9 +79,9 @@ const diagnostics = (t, worst) => {
 };
 
 test("closed-loop.json is what the README describes", () => {
-  assert.equal(closedLoop.traces.length, 6);
+  assert.equal(closedLoop.traces.length, 8);
   assert.equal(closedLoop.start, "2026-10-11T14:00:00.000Z");
-  assert.equal(closedLoop.stanpumpRCommit, "7d2d2f1b7727f39eba313fd8c5deea5b5104d959");
+  assert.equal(closedLoop.stanpumpRCommit, manifest.commit);
   for (const trace of closedLoop.traces) {
     assert.equal(trace.steps.length, 181, trace.name);
     assert.equal(trace.steps[0].nowSeconds, 0);

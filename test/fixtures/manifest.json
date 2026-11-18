@@ -1,27 +1,27 @@
 {
-  "generatedAt": "2026-10-14T22:29:19Z",
-  "commit": "7d2d2f1b7727f39eba313fd8c5deea5b5104d959",
+  "generatedAt": "2026-11-18T02:05:04Z",
+  "commit": "d99231c6aebf09d8a6d0352e188f32d4dc4ed6bc",
   "version": "0.0.1.9002",
-  "successCases": 49,
+  "successCases": 99,
   "errorCases": 13,
-  "modelEntries": 16,
-  "traces": 6,
-  "maxRelativeReplayDifference": 4.59079460304248e-15,
+  "modelEntries": 48,
+  "traces": 8,
+  "maxRelativeReplayDifference": 4.85248154992013e-15,
   "files": {
     "models.json": {
-      "bytes": 93239,
+      "bytes": 282735,
       "parsed": true
     },
     "ke0-solve.json": {
-      "bytes": 38519,
+      "bytes": 97341,
       "parsed": true
     },
     "rate-cases.json": {
-      "bytes": 608600,
+      "bytes": 1089737,
       "parsed": true
     },
     "closed-loop.json": {
-      "bytes": 1522608,
+      "bytes": 2025246,
       "parsed": true
     }
   }
